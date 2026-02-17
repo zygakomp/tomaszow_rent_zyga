@@ -2,7 +2,7 @@ name: Codzienny otodom_tom_sell
 
 on:
   schedule:
-    - cron: '0 10 * * *'
+    - cron: '30 15 * * *'
   workflow_dispatch:
 
 jobs:
