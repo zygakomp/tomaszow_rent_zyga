@@ -4,7 +4,7 @@ on:
   schedule:
     # Czas podajemy w formacie Cron (UTC). 
     # '0 8 * * *' oznacza codziennie o 8:00 rano czasu UTC (czyli 9:00 lub 10:00 w Polsce).
-    - cron: '0 8 * * *' 
+    - cron: '0 10 * * *' 
   workflow_dispatch: # Ten wpis dodaje przycisk "Run", żebyś mógł odpalić skrypt ręcznie
 
 jobs:
@@ -26,4 +26,4 @@ jobs:
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
       - name: Uruchom skrypt
-        run: python main.py # Zmień main.py na nazwę Twojego pliku!
+        run: python Otodom_tom_rent.py # Zmień main.py na nazwę Twojego pliku!
