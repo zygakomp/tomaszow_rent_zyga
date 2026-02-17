@@ -72,17 +72,8 @@ def _to_amount(pl_amount_text):
 
 def parse_rent_and_fees(card_text):
     """
-    Zwraca:
-      (koszt_najmu, czynsz)
-
-    Logika:
-    - wyciąga wszystkie wystąpienia: "<kwota> zł"
-    - patrzy na kontekst (okno znaków przed/po)
-    - jeśli w kontekście jest 'kaucja' -> ignoruj
-    - jeśli w kontekście jest 'czynsz'/'opłaty'/'administr' -> traktuj jako czynsz
-    - pozostałe kwoty -> kandydaci na koszt najmu
-    - koszt najmu: największa z kandydatów
-    - czynsz: największa z czynszowych (jeśli brak -> 0)
+    Fallback na regex z tekstu (gdy DOM nie da się złapać).
+    Zwraca: (koszt_najmu, czynsz)
     """
     if not card_text:
         return 0, 0
@@ -90,7 +81,6 @@ def parse_rent_and_fees(card_text):
     txt = card_text.replace('\xa0', ' ')
     txt_low = txt.lower()
 
-    # Znajdź wszystkie kwoty z "zł" wraz ze span
     matches = list(re.finditer(r'(\d[\d\s,\.]*)\s*zł', txt, flags=re.IGNORECASE))
 
     rent_candidates = []
@@ -107,11 +97,9 @@ def parse_rent_and_fees(card_text):
         ctx_end = min(len(txt), end + 35)
         ctx = txt_low[ctx_start:ctx_end]
 
-        # Odfiltruj kaucje / depozyty
         if ('kaucj' in ctx) or ('depozyt' in ctx):
             continue
 
-        # Czynsz / opłaty administracyjne / eksploatacyjne
         if ('czynsz' in ctx) or ('opłat' in ctx) or ('administr' in ctx) or ('eksploat' in ctx):
             fee_candidates.append(amount)
         else:
@@ -120,11 +108,8 @@ def parse_rent_and_fees(card_text):
     koszt_najmu = max(rent_candidates) if rent_candidates else 0
     czynsz = max(fee_candidates) if fee_candidates else 0
 
-    # Dodatkowa asekuracja:
-    # jeśli nie wykryto czynszu po kontekście, ale są 2+ sensowne kwoty,
-    # a w całym tekście jest słowo "czynsz", to spróbuj wziąć "mniejszą" jako czynsz.
+    # asekuracja: jeśli w tekście jest "czynsz", a nie złapaliśmy kontekstu
     if czynsz == 0 and ('czynsz' in txt_low):
-        # weź wszystkie kwoty bez kaucji i spróbuj odgadnąć
         all_amounts = []
         for m in matches:
             amount = _to_amount(m.group(1))
@@ -134,7 +119,6 @@ def parse_rent_and_fees(card_text):
                 if ('kaucj' in ctx) or ('depozyt' in ctx):
                     continue
                 all_amounts.append(amount)
-        # heurystyka: największa to najem, druga największa to czynsz
         all_amounts = sorted(all_amounts, reverse=True)
         if len(all_amounts) >= 2:
             koszt_najmu = all_amounts[0]
@@ -142,16 +126,70 @@ def parse_rent_and_fees(card_text):
 
     return koszt_najmu, czynsz
 
+def extract_prices_from_card_dom(card):
+    """
+    Najpierw próbujemy wyciągnąć cenę i czynsz z DOM (po selektorach),
+    bo card.text na liście wyników często NIE zawiera ceny głównej.
+
+    Zwraca: (koszt_najmu, czynsz)
+    """
+    # 1) Cena główna: różne selektory (otodom zmienia klasy, ale data-cy bywa stabilne)
+    main_price_selectors = [
+        'strong[data-cy="adPageHeaderPrice"]',     # z Twojego HTML (czasem karta/preview)
+        'strong[aria-label="Cena"]',               # z Twojego HTML
+        '[data-cy*="price"] strong',               # szeroki fallback
+        '[data-cy*="Price"] strong',
+        'strong',                                  # ostateczny (ale filtrowany tekstem)
+        'span[data-cy*="price"]',
+    ]
+
+    koszt_najmu = 0
+    for sel in main_price_selectors:
+        try:
+            els = card.find_elements(By.CSS_SELECTOR, sel)
+            for el in els:
+                t = (el.text or "").strip()
+                if not t:
+                    continue
+                # chcemy tylko takie, które wyglądają jak "X zł"
+                if 'zł' in t.lower():
+                    val = _to_amount(t)
+                    if val > koszt_najmu:
+                        koszt_najmu = val
+        except:
+            pass
+
+    # 2) Czynsz: szukamy elementów zawierających "Czynsz"
+    czynsz = 0
+    try:
+        # XPath: elementy potomne, które zawierają tekst "Czynsz"
+        fee_els = card.find_elements(By.XPATH, ".//*[contains(translate(., 'CZYNSZ', 'czynsz'), 'czynsz')]")
+        for el in fee_els:
+            t = (el.text or "").strip()
+            if not t:
+                continue
+            # ignorujemy "kaucja"
+            if 'kaucj' in t.lower() or 'depozyt' in t.lower():
+                continue
+            if 'zł' in t.lower():
+                val = _to_amount(t)
+                if val > czynsz:
+                    czynsz = val
+    except:
+        pass
+
+    # Jeśli DOM nic nie dał dla ceny głównej, zwrócimy 0 i polecimy fallbackiem regex
+    return koszt_najmu, czynsz
+
 def process_page(driver):
     rows_to_append = []
     print("Przeszukuję stronę w poszukiwaniu ofert...")
 
-    # Przewijanie - bardzo ważne dla doładowania ofert
+    # Przewijanie - ważne dla doładowania ofert
     for i in range(3):
         driver.execute_script(f"window.scrollTo(0, {(i + 1) * 800});")
         time.sleep(2)
 
-    # Próbujemy znaleźć karty ogłoszeń różnymi metodami
     listing_cards = driver.find_elements(By.CSS_SELECTOR, 'article[data-cy="listing-item"]')
     if not listing_cards:
         listing_cards = driver.find_elements(By.CSS_SELECTOR, 'div[data-cy="search.listing.organic"] article')
@@ -162,7 +200,6 @@ def process_page(driver):
 
     for card in listing_cards:
         try:
-            # 1. Pobieramy link - jeśli go nie ma, to nie jest ogłoszenie
             link_el = card.find_element(By.TAG_NAME, 'a')
             link = link_el.get_attribute('href')
             if not link or 'pl/oferta/' not in link:
@@ -172,16 +209,13 @@ def process_page(driver):
             card_text = card.text
             lines = [line.strip() for line in card_text.split('\n') if line.strip()]
 
-            # --- INTELIGENTNY TYTUŁ ---
+            # --- TYTUŁ ---
             tytul = "Brak tytułu"
             for line in lines:
-                # Pomijamy licznik zdjęć (np. 1 / 10)
                 if '/' in line and len(line) < 10:
                     continue
-                # Pomijamy ceny (wszystko co ma zł)
                 if 'zł' in line.lower():
                     continue
-                # Pomijamy adresy (miejscowości) w pierwszej linii
                 if 'tomaszów' in line.lower() and len(line) < 25:
                     continue
                 tytul = line
@@ -196,7 +230,17 @@ def process_page(driver):
                         break
 
             # --- CENY: KOSZT NAJMU (E) + CZYNSZ (F) ---
-            cena_najmu, czynsz = parse_rent_and_fees(card_text)
+            # 1) DOM (pewniejsze)
+            cena_najmu_dom, czynsz_dom = extract_prices_from_card_dom(card)
+
+            # 2) fallback: regex z tekstu
+            cena_najmu_txt, czynsz_txt = parse_rent_and_fees(card_text)
+
+            # Składanie wyników:
+            # - koszt najmu: preferuj DOM, jeśli 0 -> fallback text
+            # - czynsz: preferuj DOM jeśli >0, inaczej fallback text
+            cena_najmu = cena_najmu_dom if cena_najmu_dom > 0 else cena_najmu_txt
+            czynsz = czynsz_dom if czynsz_dom > 0 else czynsz_txt
 
             # --- PARAMETRY (Pokoje, m2, Piętro) ---
             pokoje, metraz, pietro = "0", "0", "0"
@@ -216,13 +260,6 @@ def process_page(driver):
                 typ = "Biuro nieruchomości"
                 wystawca = lines[-1] if len(lines) > 0 else "Biuro"
 
-            # KOLEJNOŚĆ KOLUMN:
-            # A Data Scrapping
-            # B URL Ogłoszenia
-            # C Tytuł Ogłoszenia
-            # D Adres
-            # E Koszt Najmu
-            # F Czynsz
             rows_to_append.append([
                 data_now, link, tytul, adres,
                 cena_najmu, czynsz,
