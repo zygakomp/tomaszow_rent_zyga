@@ -2,30 +2,36 @@ name: Codzienny Otodom_tom_sell
 
 on:
   schedule:
-    # Czas podajemy w formacie Cron (UTC). 
-    # '0 8 * * *' oznacza codziennie o 8:00 rano czasu UTC (czyli 9:00 lub 10:00 w Polsce).
-    - cron: '0 10 * * *' 
-  workflow_dispatch: # Ten wpis dodaje przycisk "Run", żebyś mógł odpalić skrypt ręcznie
+    - cron: '0 10 * * *'
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest # GitHub uruchomi to na darmowym systemie Linux
+    runs-on: ubuntu-latest
 
     steps:
       - name: Pobierz kod z repozytorium
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Zainstaluj Pythona
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10' # Możesz wpisać swoją wersję
+          python-version: '3.10'
 
       - name: Zainstaluj biblioteki
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
+      - name: Lista plików (debug)
+        run: |
+          pwd
+          ls -la
+          find . -maxdepth 3 -type f -name "*.py" -print
+
       - name: Run python Otodom_tom_sell.py
         env:
           G_SHEETS_JSON: ${{ secrets.G_SHEETS_JSON }}
-        run: python Otodom_tom_sell.py
+        run: |
+          python -V
+          python ./Otodom_tom_sell.py
