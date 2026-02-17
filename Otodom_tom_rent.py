@@ -58,87 +58,90 @@ def setup_selenium_driver():
 
 def process_page(driver):
     rows_to_append = []
-    print("Przeszukuję stronę w poszukiwaniu ofert...")
+    print("Analizuję ogłoszenia...")
     
-    # Przewijanie - bardzo ważne dla doładowania ofert
-    for i in range(3):
-        driver.execute_script(f"window.scrollTo(0, { (i+1)*800 });")
-        time.sleep(2)
+    # Przewinięcie strony, aby załadować wszystkie elementy
+    driver.execute_script("window.scrollBy(0, 800);")
+    time.sleep(2)
 
-    # Próbujemy znaleźć karty ogłoszeń różnymi metodami
+    # Szukamy kart ogłoszeń po konkretnym atrybucie Otodom
     listing_cards = driver.find_elements(By.CSS_SELECTOR, 'article[data-cy="listing-item"]')
-    if not listing_cards:
-        listing_cards = driver.find_elements(By.CSS_SELECTOR, 'div[data-cy="search.listing.organic"] article')
-    if not listing_cards:
-        listing_cards = driver.find_elements(By.TAG_NAME, 'article')
-
-    print(f"Wykryto {len(listing_cards)} potencjalnych ogłoszeń.")
-
+    
     for card in listing_cards:
         try:
-            # 1. Pobieramy link - jeśli go nie ma, to nie jest ogłoszenie
-            link_el = card.find_element(By.TAG_NAME, 'a')
-            link = link_el.get_attribute('href')
-            if not link or 'pl/oferta/' not in link: continue
-
+            # 1. URL i Czas
+            link = card.find_element(By.TAG_NAME, 'a').get_attribute('href')
+            if 'pl/oferta/' not in link: continue
             data_now = time.strftime("%Y-%m-%d %H:%M:%S")
-            card_text = card.text
-            lines = [line.strip() for line in card_text.split('\n') if line.strip()]
 
-            # --- INTELIGENTNY TYTUŁ ---
-            tytul = "Brak tytułu"
-            for line in lines:
-                # Pomijamy licznik zdjęć (np. 1 / 10)
-                if '/' in line and len(line) < 10: continue
-                # Pomijamy ceny (wszystko co ma zł)
-                if 'zł' in line.lower(): continue
-                # Pomijamy adresy (miejscowości) w pierwszej linii
-                if 'tomaszów' in line.lower() and len(line) < 25: continue
-                tytul = line
-                break
+            # 2. Tytuł (precyzyjny, omija licznik zdjęć 1/10)
+            try:
+                tytul = card.find_element(By.CSS_SELECTOR, '[data-cy="listing-item-title"]').text.strip()
+            except:
+                tytul = "Brak tytułu"
 
-            # --- ADRES ---
-            adres = "Tomaszów Mazowiecki"
-            for line in lines:
-                if 'tomaszów' in line.lower() or 'mazowiecki' in line.lower():
-                    if 'zł' not in line.lower():
-                        adres = line
-                        break
+            # 3. Adres
+            try:
+                adres = card.find_element(By.CSS_SELECTOR, '[data-cy="listing-item-address"]').text.strip()
+            except:
+                adres = "Tomaszów Mazowiecki"
 
-            # --- CENY (Największa to koszt najmu, mniejsza to czynsz) ---
-            # Wyciągamy wszystkie kwoty z symbolem zł
-            found_prices = re.findall(r'([\d\s,]+)\s*zł', card_text.replace('\xa0', ' '))
-            clean_prices = sorted([float(extract_numbers(p)) for p in found_prices], reverse=True)
-            
-            cena_najmu = clean_prices[0] if len(clean_prices) > 0 else 0
-            # Czynsz - bierzemy drugą co do wielkości kwotę, jeśli słowo 'czynsz' jest w tekście
-            czynsz = clean_prices[1] if len(clean_prices) > 1 and 'czynsz' in card_text.lower() else 0
+            # 4. KOSZT NAJMU (Główna cena) - Celujemy bezpośrednio w znacznik ceny
+            cena_najmu = 0
+            try:
+                cena_raw = card.find_element(By.CSS_SELECTOR, '[data-cy="listing-item-price"]').text
+                cena_najmu = clean_and_convert_to_number(extract_numbers(cena_raw))
+            except:
+                cena_najmu = 0
 
-            # --- PARAMETRY (Pokoje, m2, Piętro) ---
+            # 5. CZYNSZ DODATKOWO - Szukamy tekstu zawierającego "+ czynsz"
+            czynsz = 0
+            card_text_lower = card.text.lower().replace('\xa0', ' ')
+            if "czynsz" in card_text_lower:
+                # Szukamy wzorca "+ czynsz: 500 zł" lub "+ 500 zł czynsz"
+                match_cz = re.search(r'czynsz[:\s]*([\d\s]+)', card_text_lower)
+                if match_cz:
+                    czynsz = clean_and_convert_to_number(extract_numbers(match_cz.group(1)))
+                else:
+                    # Jeśli nie znaleziono przez regex, szukamy mniejszej kwoty w tekście
+                    prices = re.findall(r'([\d\s]+)\s*zł', card_text_lower)
+                    prices = [float(extract_numbers(p)) for p in prices]
+                    if len(prices) > 1:
+                        # Jeśli są dwie ceny, mniejsza to zazwyczaj czynsz
+                        # (ale nie bierzemy tej, która jest ceną najmu)
+                        prices.remove(cena_najmu) if cena_najmu in prices else None
+                        if prices:
+                            czynsz = max(prices) # Bierzemy największą z pozostałych
+
+            # 6. PARAMETRY (Pokoje, Powierzchnia, Piętro)
             pokoje, metraz, pietro = "0", "0", "0"
-            for line in lines:
-                l_low = line.lower()
-                if 'poko' in l_low: pokoje = extract_numbers(line)
-                if 'm²' in l_low: metraz = extract_numbers(line)
-                if 'piętr' in l_low: pietro = extract_numbers(line)
+            # Szukamy wewnątrz listy specyfikacji kafelka
+            specs = card.find_elements(By.TAG_NAME, 'span')
+            for s in specs:
+                t = s.text.lower()
+                if 'poko' in t: pokoje = extract_numbers(t)
+                if 'm²' in t: metraz = extract_numbers(t).replace(',', '.')
+                if 'piętr' in t: pietro = extract_numbers(t)
 
-            # --- OFERENT ---
+            # 7. TYP OFERENTA i WYSTAWCA
             typ = "Oferta prywatna"
             wystawca = "Osoba prywatna"
-            if "biuro" in card_text.lower() or "agency" in card_text.lower():
+            if "biuro" in card_text_lower or "nieruchomości" in card_text_lower:
                 typ = "Biuro nieruchomości"
-                wystawca = lines[-1] if len(lines) > 0 else "Biuro"
+                # Nazwa biura to zazwyczaj ostatnia linia tekstu w kafelku
+                wystawca = card.text.split('\n')[-1]
 
-            rows_to_append.append([
+            # Złożenie wiersza do zapisu
+            row = [
                 data_now, link, tytul, adres, cena_najmu, czynsz, 
                 pokoje, metraz, pietro, typ, wystawca, 
                 "Brak Danych (Poza Kartą)", "Brak opisu (Poza Kartą)"
-            ])
+            ]
+            rows_to_append.append(row)
         except:
             continue
             
     return rows_to_append
-
 def main():
     zakladka = authorize_google_sheets()
     driver = setup_selenium_driver()
@@ -167,3 +170,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
