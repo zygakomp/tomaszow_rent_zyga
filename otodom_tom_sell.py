@@ -11,6 +11,11 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
 import time
 import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+WARSAW_TZ = ZoneInfo("Europe/Warsaw")
+
 
 # --- KONFIGURACJA SKRYPTU ---
 ARKUSZ_ID = '1JdrNZr4eeX8Vc1w-V7XgB2ysdnxAQg_KqCE3b6RHCtc'
@@ -159,7 +164,7 @@ def process_page(driver):
     print(f"Znaleziono {len(listing_cards)} ogłoszeń do przetworzenia.")
 
     for i, card in enumerate(listing_cards):
-        data_scrapingu = time.strftime("%Y-%m-%d %H:%M:%S")
+        data_scrapingu = datetime.now(WARSAW_TZ).strftime("%Y-%m-%d %H:%M:%S")
         link, tytul, adres = "Brak linku", "Brak tytułu", "Brak adresu"
 
         cena_text = "Brak Danych"
