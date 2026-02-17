@@ -11,6 +11,11 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+WARSAW_TZ = ZoneInfo("Europe/Warsaw")
+
 
 # --- KONFIGURACJA ---
 ARKUSZ_ID = '1JdrNZr4eeX8Vc1w-V7XgB2ysdnxAQg_KqCE3b6RHCtc'
@@ -222,7 +227,7 @@ def process_page(driver):
             if not link or 'pl/oferta/' not in link:
                 continue
 
-            data_now = time.strftime("%Y-%m-%d %H:%M:%S")
+            data_now = datetime.now(WARSAW_TZ).strftime("%Y-%m-%d %H:%M:%S")
             card_text = card.text
             lines = [line.strip() for line in card_text.split('\n') if line.strip()]
 
@@ -317,3 +322,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
