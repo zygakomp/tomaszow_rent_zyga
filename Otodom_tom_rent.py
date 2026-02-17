@@ -82,50 +82,110 @@ def handle_cookies(driver):
 
 def process_page(driver):
     rows_to_append = []
-    print("Szukam kart ogłoszeń na stronie...")
+    print("Szukam kart ogłoszeń...")
     
-    # Próbujemy znaleźć ogłoszenia za pomocą różnych selektorów (Otodom je miesza)
     try:
         WebDriverWait(driver, 15).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, 'article[data-cy="listing-item"]'))
         )
     except:
-        print("Nie doczekano się na załadowanie kart listing-item. Próbuję mimo to...")
+        print("Nie znaleziono ofert. Sprawdzam czy strona się załadowała...")
+        return rows_to_append
 
-    # Szukamy wszystkich artykułów, które wyglądają jak ogłoszenia
     listing_cards = driver.find_elements(By.CSS_SELECTOR, 'article[data-cy="listing-item"]')
-    
-    # Jeśli nadal pusto, szukamy po sentry-component (stara metoda)
-    if not listing_cards:
-        listing_cards = driver.find_elements(By.XPATH, "//article[@data-sentry-component='AdvertCard'] | //article[@data-sentry-component='VipAdvertCard']")
-
-    print(f"Liczba wykrytych kart ogłoszeń: {len(listing_cards)}")
+    print(f"Znaleziono {len(listing_cards)} ogłoszeń.")
 
     for card in listing_cards:
         data_scrapingu = time.strftime("%Y-%m-%d %H:%M:%S")
-        try:
-            # Szukanie linku i tytułu
-            link_element = card.find_element(By.CSS_SELECTOR, 'a[data-cy="listing-item-link"]')
-            link = link_element.get_attribute('href')
-            
-            # Tytuł jest zazwyczaj w h3 lub p wewnątrz linku
-            try:
-                tytul = card.find_element(By.CSS_SELECTOR, 'p[data-cy="listing-item-title"]').text.strip()
-            except:
-                tytul = "Brak tytułu"
+        
+        # Domyślne wartości
+        link, tytul, adres = "Brak", "Brak", "Brak"
+        cena, czynsz, pokoje, powierzchnia, pietro = "Brak", "Brak", "Brak", "Brak", "Brak"
+        typ_oferenta, wystawca = "Brak", "Brak"
 
-            # Cena
+        try:
+            # 1. Link i Tytuł
+            link_el = card.find_element(By.CSS_SELECTOR, 'a[data-cy="listing-item-link"]')
+            link = link_el.get_attribute('href')
+            tytul = card.find_element(By.CSS_SELECTOR, 'p[data-cy="listing-item-title"]').text.strip()
+            
+            # 2. Adres
+            try:
+                adres = card.find_element(By.CSS_SELECTOR, 'p[data-cy="listing-item-address"]').text.strip()
+            except:
+                pass
+
+            # 3. Cena główna
             try:
                 cena_raw = card.find_element(By.CSS_SELECTOR, 'span[data-cy="listing-item-price"]').text
                 cena = clean_and_convert_to_number(extract_numbers(cena_raw))
             except:
-                cena = "Brak danych"
-                
-            rows_to_append.append([data_scrapingu, link, tytul, "", cena, "", "", "", "", "", "", "", ""])
+                pass
+
+            # 4. Czynsz (dodatkowy)
+            try:
+                # Szukamy tekstu zawierającego "+ czynsz" w okolicy ceny
+                extra_info = card.text
+                if "+ czynsz" in extra_info:
+                    # Wyciągamy kwotę czynszu po słowie "czynsz:"
+                    match = re.search(r'czynsz:\s*([\d\s,]+)', extra_info)
+                    if match:
+                        czynsz = clean_and_convert_to_number(extract_numbers(match.group(1)))
+            except:
+                pass
+
+            # 5. Parametry (Pokoje, Powierzchnia, Piętro)
+            # Szukamy w liście definicji <dl> wewnątrz karty
+            try:
+                specs = card.find_elements(By.CSS_SELECTOR, 'dl > div')
+                for spec in specs:
+                    text = spec.text.lower()
+                    val = spec.find_element(By.TAG_NAME, 'dd').text
+                    
+                    if 'poko' in text:
+                        pokoje = clean_and_convert_to_number(extract_numbers(val))
+                    elif 'm²' in text or 'powierzchnia' in text:
+                        powierzchnia = clean_and_convert_to_number(extract_numbers(val))
+                    elif 'piętro' in text:
+                        pietro = clean_and_convert_to_number(extract_numbers(val))
+            except:
+                pass
+
+            # 6. Typ oferenta
+            try:
+                # Zazwyczaj ikona lub tekst na dole karty
+                info_text = card.text
+                if "Biuro" in info_text:
+                    typ_oferenta = "Biuro nieruchomości"
+                    wystawca = "Biuro"
+                else:
+                    typ_oferenta = "Prywatna"
+                    wystawca = "Osoba prywatna"
+            except:
+                pass
+
+            # Tworzymy pełny wiersz zgodnie z Twoimi nagłówkami
+            row = [
+                data_scrapingu,
+                link,
+                tytul,
+                adres,
+                cena,
+                czynsz,
+                pokoje,
+                powierzchnia,
+                pietro,
+                typ_oferenta,
+                wystawca,
+                "Brak Danych (Poza Kartą)",
+                "Brak opisu (Poza Kartą)"
+            ]
+            rows_to_append.append(row)
+
         except Exception as e:
-            # Skipujemy pojedyncze błędy w kartach (np. reklamy)
+            print(f"Błąd przy przetwarzaniu karty: {e}")
             continue
-            
+
     return rows_to_append
 
 def main():
@@ -161,4 +221,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
