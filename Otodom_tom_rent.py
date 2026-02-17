@@ -10,7 +10,6 @@ from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementClickInterceptedException
 from selenium.webdriver.chrome.options import Options
 
 # --- KONFIGURACJA ---
@@ -19,207 +18,131 @@ NAZWA_ZAKLADKI = 'TOM_OTO'
 URL_OTODOM = 'https://www.otodom.pl/pl/wyniki/wynajem/mieszkanie/lodzkie/tomaszowski/gmina-miejska--tomaszow-mazowiecki/tomaszow-mazowiecki?ownerTypeSingleSelect=ALL'
 
 def extract_numbers(text):
-    if not text: return 'Brak Danych'
+    if not text: return '0'
     processed_text = text.replace(' ', '').replace(',', '.')
     match = re.search(r'(\d+\.?\d*)', processed_text)
-    return match.group(1) if match else 'Brak Danych'
+    return match.group(1) if match else '0'
 
 def clean_and_convert_to_number(value):
-    if value == 'Brak Danych': return value
     try: return float(value)
-    except ValueError: return value
+    except: return 0
 
 def authorize_google_sheets():
     print("Autoryzacja do Google Sheets...")
     try:
         creds_json = os.environ.get('G_SHEETS_JSON')
-        if not creds_json:
-            raise Exception("Brak sekretu G_SHEETS_JSON!")
-            
         creds_dict = json.loads(creds_json)
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
-        arkusz = client.open_by_key(ARKUSZ_ID)
-        
-        try:
-            zakladka = arkusz.worksheet(NAZWA_ZAKLADKI)
-        except gspread.WorksheetNotFound:
-            zakladka = arkusz.add_worksheet(title=NAZWA_ZAKLADKI, rows="100", cols="20")
-        return zakladka
+        return client.open_by_key(ARKUSZ_ID).worksheet(NAZWA_ZAKLADKI)
     except Exception as e:
         print(f"BŁĄD autoryzacji: {e}")
         return None
 
 def setup_selenium_driver():
-    print("Inicjalizacja ustawień Chrome...")
     options = Options()
     options.add_argument('--headless=new')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
-    options.add_argument('--disable-gpu')
     options.add_argument('--window-size=1920,1080')
-    options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
+    # Kluczowe: udawanie prawdziwej przeglądarki
+    options.add_argument('--disable-blink-features=AutomationControlled')
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option('useAutomationExtension', False)
+    options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36')
     
-    try:
-        service = ChromeService(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=options)
-        print("Przeglądarka uruchomiona pomyślnie.")
-        return driver
-    except Exception as e:
-        print(f"BŁĄD startu Chrome: {e}")
-        return None
-
-def handle_cookies(driver):
-    """Funkcja, której brakowało poprzednio."""
-    try:
-        WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))
-        ).click()
-        print("Ciasteczka zaakceptowane.")
-    except:
-        print("Komunikat o ciasteczkach nie pojawił się.")
+    service = ChromeService(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=options)
+    # Ukrywanie faktu bycia botem przed skryptami JS
+    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    return driver
 
 def process_page(driver):
     rows_to_append = []
-    print("Szukam kart ogłoszeń...")
-    
-    try:
-        WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, 'article[data-cy="listing-item"]'))
-        )
-    except:
-        print("Nie znaleziono ofert. Sprawdzam czy strona się załadowała...")
-        return rows_to_append
+    # Przewijamy stronę w dół, żeby wymusić załadowanie ogłoszeń (Lazy Load)
+    driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
+    time.sleep(2)
+    driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+    time.sleep(2)
 
-    listing_cards = driver.find_elements(By.CSS_SELECTOR, 'article[data-cy="listing-item"]')
-    print(f"Znaleziono {len(listing_cards)} ogłoszeń.")
+    # Szukamy ogłoszeń po dowolnym tagu 'article' (najbardziej odporne na zmiany nazw)
+    listing_cards = driver.find_elements(By.TAG_NAME, 'article')
+    print(f"Wykryto obiektów typu article: {len(listing_cards)}")
 
     for card in listing_cards:
-        data_scrapingu = time.strftime("%Y-%m-%d %H:%M:%S")
-        
-        # Domyślne wartości
-        link, tytul, adres = "Brak", "Brak", "Brak"
-        cena, czynsz, pokoje, powierzchnia, pietro = "Brak", "Brak", "Brak", "Brak", "Brak"
-        typ_oferenta, wystawca = "Brak", "Brak"
-
+        # Sprawdzamy czy to faktycznie ogłoszenie (czy ma link)
         try:
-            # 1. Link i Tytuł
-            link_el = card.find_element(By.CSS_SELECTOR, 'a[data-cy="listing-item-link"]')
+            link_el = card.find_element(By.TAG_NAME, 'a')
             link = link_el.get_attribute('href')
-            tytul = card.find_element(By.CSS_SELECTOR, 'p[data-cy="listing-item-title"]').text.strip()
+            if 'oferta/' not in link: continue
             
-            # 2. Adres
-            try:
-                adres = card.find_element(By.CSS_SELECTOR, 'p[data-cy="listing-item-address"]').text.strip()
-            except:
-                pass
+            data_now = time.strftime("%Y-%m-%d %H:%M:%S")
+            full_text = card.text # Pobieramy cały tekst karty naraz - szybciej i pewniej
+            
+            # Analiza tekstu karty
+            lines = full_text.split('\n')
+            tytul = lines[0] if len(lines) > 0 else "Brak"
+            
+            # Cena - zazwyczaj pierwsza linia z "zł"
+            cena = 0
+            for line in lines:
+                if 'zł' in line and 'czynsz' not in line.lower():
+                    cena = clean_and_convert_to_number(extract_numbers(line))
+                    break
+            
+            # Czynsz
+            czynsz = 0
+            match_czynsz = re.search(r'\+\s*czynsz[:\s]*([\d\s]+)', full_text.lower())
+            if match_czynsz:
+                czynsz = clean_and_convert_to_number(extract_numbers(match_czynsz.group(1)))
 
-            # 3. Cena główna
-            try:
-                cena_raw = card.find_element(By.CSS_SELECTOR, 'span[data-cy="listing-item-price"]').text
-                cena = clean_and_convert_to_number(extract_numbers(cena_raw))
-            except:
-                pass
+            # Parametry (Pokoje, m2)
+            pokoje, metraz, pietro = 0, 0, 0
+            for line in lines:
+                if 'poko' in line.lower(): pokoje = extract_numbers(line)
+                if 'm²' in line: metraz = extract_numbers(line)
+                if 'piętro' in line.lower(): pietro = extract_numbers(line)
 
-            # 4. Czynsz (dodatkowy)
-            try:
-                # Szukamy tekstu zawierającego "+ czynsz" w okolicy ceny
-                extra_info = card.text
-                if "+ czynsz" in extra_info:
-                    # Wyciągamy kwotę czynszu po słowie "czynsz:"
-                    match = re.search(r'czynsz:\s*([\d\s,]+)', extra_info)
-                    if match:
-                        czynsz = clean_and_convert_to_number(extract_numbers(match.group(1)))
-            except:
-                pass
+            # Adres - zazwyczaj linia po tytule
+            adres = lines[1] if len(lines) > 1 else "Brak"
 
-            # 5. Parametry (Pokoje, Powierzchnia, Piętro)
-            # Szukamy w liście definicji <dl> wewnątrz karty
-            try:
-                specs = card.find_elements(By.CSS_SELECTOR, 'dl > div')
-                for spec in specs:
-                    text = spec.text.lower()
-                    val = spec.find_element(By.TAG_NAME, 'dd').text
-                    
-                    if 'poko' in text:
-                        pokoje = clean_and_convert_to_number(extract_numbers(val))
-                    elif 'm²' in text or 'powierzchnia' in text:
-                        powierzchnia = clean_and_convert_to_number(extract_numbers(val))
-                    elif 'piętro' in text:
-                        pietro = clean_and_convert_to_number(extract_numbers(val))
-            except:
-                pass
-
-            # 6. Typ oferenta
-            try:
-                # Zazwyczaj ikona lub tekst na dole karty
-                info_text = card.text
-                if "Biuro" in info_text:
-                    typ_oferenta = "Biuro nieruchomości"
-                    wystawca = "Biuro"
-                else:
-                    typ_oferenta = "Prywatna"
-                    wystawca = "Osoba prywatna"
-            except:
-                pass
-
-            # Tworzymy pełny wiersz zgodnie z Twoimi nagłówkami
-            row = [
-                data_scrapingu,
-                link,
-                tytul,
-                adres,
-                cena,
-                czynsz,
-                pokoje,
-                powierzchnia,
-                pietro,
-                typ_oferenta,
-                wystawca,
-                "Brak Danych (Poza Kartą)",
-                "Brak opisu (Poza Kartą)"
-            ]
+            row = [data_now, link, tytul, adres, cena, czynsz, pokoje, metraz, pietro, "Biuro/Prywatne", "Wystawca", "Brak", "Brak"]
             rows_to_append.append(row)
-
-        except Exception as e:
-            print(f"Błąd przy przetwarzaniu karty: {e}")
+        except:
             continue
-
+            
     return rows_to_append
 
 def main():
     zakladka = authorize_google_sheets()
-    if not zakladka: return
-        
     driver = setup_selenium_driver()
-    if not driver: return
+    if not zakladka or not driver: return
 
     try:
-        print(f"Wchodzę na stronę: {URL_OTODOM}")
+        print(f"Otwieram: {URL_OTODOM}")
         driver.get(URL_OTODOM)
-        time.sleep(8) 
+        time.sleep(10) # Czekamy aż wszystko (reklamy, skrypty) się załaduje
         
-        handle_cookies(driver)
+        # Akceptacja cookies
+        try:
+            WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))).click()
+            print("Cookies OK.")
+        except: pass
         
-        print("Rozpoczynam zbieranie danych...")
-        all_data = process_page(driver)
+        data = process_page(driver)
         
-        if all_data:
-            print(f"Znaleziono {len(all_data)} ofert. Zapisuję...")
-            zakladka.append_rows(all_data)
-            print("ZAPIS ZAKOŃCZONY SUKCESEM!")
+        if data:
+            print(f"Zapisuję {len(data)} ofert...")
+            zakladka.append_rows(data)
+            print("SUKCES!")
         else:
-            print("Nie znaleziono ofert. Sprawdź selektory.")
+            print("Nadal nie widzę ofert. Prawdopodobna blokada bota (Captcha).")
+            # Log dla Ciebie: co widzi przeglądarka?
+            print(f"Tytuł strony: {driver.title}")
             
-    except Exception as e:
-        print(f"Wystąpił błąd: {e}")
     finally:
-        if 'driver' in locals():
-            driver.quit()
-            print("Przeglądarka zamknięta.")
+        driver.quit()
 
 if __name__ == "__main__":
     main()
-
-
