@@ -28,4 +28,4 @@ jobs:
       - name: Run python Otodom_tom_rent.py
         env:
           G_SHEETS_JSON: ${{ secrets.G_SHEETS_JSON }}
-        run: python Otodom_tom_rent.py
+        run: python Otodom_tom_sell.py
