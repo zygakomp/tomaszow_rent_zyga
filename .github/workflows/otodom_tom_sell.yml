@@ -1,4 +1,4 @@
-name: Codzienny Automat Python
+name: Codzienny Otodom_tom_sell
 
 on:
   schedule:
@@ -25,7 +25,7 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      - name: Run python Otodom_tom_rent.py
+      - name: Run python Otodom_tom_sell.py
         env:
           G_SHEETS_JSON: ${{ secrets.G_SHEETS_JSON }}
         run: python Otodom_tom_sell.py
