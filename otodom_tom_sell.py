@@ -8,7 +8,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementClickInterceptedException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
 import time
 import re
 
@@ -17,6 +17,9 @@ ARKUSZ_ID = '1JdrNZr4eeX8Vc1w-V7XgB2ysdnxAQg_KqCE3b6RHCtc'
 NAZWA_ZAKLADKI = 'TOM_OTO_Sprzedaz'
 URL_OTODOM = 'https://www.otodom.pl/pl/wyniki/sprzedaz/mieszkanie/lodzkie/tomaszowski/gmina-miejska--tomaszow-mazowiecki/tomaszow-mazowiecki'
 BASE_URL = 'https://www.otodom.pl'
+
+# --- LIMIT STRON (DOMYŚLNIE 5) ---
+MAX_STRON = 5  # <- ustaw tu np. 1, 2, 5, 10 itd.
 
 
 # --- FUNKCJE POMOCNICZE ---
@@ -66,7 +69,7 @@ def authorize_google_sheets():
             'URL Ogłoszenia',
             'Tytuł Ogłoszenia',
             'Adres',
-            'Cena (sprzedaż) / Koszt Najmu',
+            'Cena (sprzedaż)',
             'Czynsz (dodatkowo)',
             'Liczba pokoi',
             'Powierzchnia',
@@ -134,10 +137,11 @@ def handle_cookies(driver):
 def process_page(driver):
     rows_to_append = []
 
-    # poczekaj na karty
     try:
         WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.XPATH, "//article[@data-sentry-component='AdvertCard' or @data-sentry-component='VipAdvertCard']"))
+            EC.presence_of_element_located(
+                (By.XPATH, "//article[@data-sentry-component='AdvertCard' or @data-sentry-component='VipAdvertCard']")
+            )
         )
     except TimeoutException:
         print("BŁĄD: Nie znaleziono kart ogłoszeń po 15s.")
@@ -168,7 +172,7 @@ def process_page(driver):
         telefon_kontaktowy = "Brak Danych (Poza Kartą)"
         opis_ogloszenia = "Brak opisu (Poza Kartą)"
 
-        # 1) Link, tytuł, adres
+        # link/tytul/adres
         try:
             link_element = card.find_element(By.XPATH, ".//a[@data-cy='listing-item-link']")
             link = link_element.get_attribute('href')
@@ -192,25 +196,22 @@ def process_page(driver):
         except NoSuchElementException:
             pass
 
-        # 2) Cena (MainPrice) i “czynsz” (TYLKO jeśli tekst faktycznie zawiera czynsz)
+        # cena (MainPrice)
         try:
             cena_el = card.find_element(By.XPATH, ".//span[@data-sentry-element='MainPrice']")
             cena_text = (cena_el.text or "").strip()
         except NoSuchElementException:
             pass
 
+        # czynsz tylko jeśli w tekście jest "czynsz"
         try:
-            # na Otodom ten drugi span bywa różny; bierzemy go tylko gdy zawiera słowo "czynsz"
             fee_el = card.find_element(By.XPATH, ".//span[contains(@class, 'eanmlll2')]")
             tmp = (fee_el.text or "").strip()
-            if "czynsz" in tmp.lower():
-                czynsz_text = tmp
-            else:
-                czynsz_text = "Brak Danych"
+            czynsz_text = tmp if "czynsz" in tmp.lower() else "Brak Danych"
         except NoSuchElementException:
             czynsz_text = "Brak Danych"
 
-        # 3) Parametry (pokoje / powierzchnia / piętro)
+        # parametry
         try:
             specs = card.find_elements(By.XPATH, ".//dl/dt | .//dl/dd/span")
             for j in range(0, len(specs), 2):
@@ -227,7 +228,7 @@ def process_page(driver):
         except NoSuchElementException:
             pass
 
-        # 4) Typ oferenta / wystawca
+        # typ/wystawca
         try:
             typ_el = card.find_element(By.XPATH, ".//span[contains(@class, 'e11ruw5v4')]")
             typ_oferenta = typ_el.text.strip()
@@ -246,7 +247,7 @@ def process_page(driver):
         except Exception:
             pass
 
-        # --- KONWERSJE ---
+        # konwersje
         cena = clean_and_convert_to_number(extract_numbers(cena_text))
         czynsz = clean_and_convert_to_number(extract_numbers(czynsz_text))
         liczba_pokoi = clean_and_convert_to_number(extract_numbers(liczba_pokoi_text))
@@ -255,13 +256,13 @@ def process_page(driver):
 
         print(f"[{i + 1}/{len(listing_cards)}] Tytuł: {tytul} | Cena: {cena} | Czynsz: {czynsz}")
 
-        row_to_save = [
+        rows_to_append.append([
             data_scrapingu,
             link,
             tytul,
             adres,
-            cena,        # kol. E
-            czynsz,      # kol. F (tylko jeśli faktycznie jest czynsz)
+            cena,
+            czynsz,
             liczba_pokoi,
             powierzchnia,
             pietro,
@@ -269,8 +270,7 @@ def process_page(driver):
             wystawca_nazwa,
             telefon_kontaktowy,
             opis_ogloszenia
-        ]
-        rows_to_append.append(row_to_save)
+        ])
 
         if (i + 1) % 10 == 0:
             time.sleep(1)
@@ -279,20 +279,14 @@ def process_page(driver):
 
 
 def get_next_page_url(driver):
-    """
-    Otodom ma paginację jako <a title="Go to next Page" ... href="...">
-    Zwraca pełny URL następnej strony albo None.
-    """
+    """Zwraca pełny URL następnej strony albo None."""
     try:
-        # to jest dokładnie Twój HTML:
-        # <a ... title="Go to next Page" ... href="/...?...page=3">
         next_link = WebDriverWait(driver, 6).until(
             EC.presence_of_element_located((By.XPATH, "//a[@title='Go to next Page' or @aria-label='Go to next Page']"))
         )
         href = next_link.get_attribute("href")
         if not href:
             return None
-        # czasem href jest względny
         if href.startswith("/"):
             href = BASE_URL + href
         return href
@@ -322,13 +316,15 @@ def main_scraper():
         handle_cookies(driver)
 
         while True:
-            print(f"\n--- PRZETWARZANIE STRONY {current_page} ---")
+            print(f"\n--- PRZETWARZANIE STRONY {current_page}/{MAX_STRON} ---")
 
-            try:
-                rows_from_page = process_page(driver)
-                all_rows_to_append.extend(rows_from_page)
-            except Exception as e:
-                print(f"BŁĄD przetwarzania strony {current_page}: {e}")
+            rows_from_page = process_page(driver)
+            all_rows_to_append.extend(rows_from_page)
+
+            # STOP po MAX_STRON
+            if current_page >= MAX_STRON:
+                print(f"Osiągnięto limit stron: {MAX_STRON}. Kończę paginację.")
+                break
 
             next_url = get_next_page_url(driver)
             if not next_url:
@@ -342,11 +338,8 @@ def main_scraper():
 
         if all_rows_to_append:
             print(f"\nZapisuję {len(all_rows_to_append)} wierszy do Arkusza Google...")
-            try:
-                zakladka.append_rows(all_rows_to_append)
-                print("Pomyślnie zapisano wszystkie ogłoszenia.")
-            except Exception as e:
-                print(f"BŁĄD zapisu do Arkusza: {e}")
+            zakladka.append_rows(all_rows_to_append)
+            print("Pomyślnie zapisano wszystkie ogłoszenia.")
         else:
             print("Nie było nic do zapisania.")
 
