@@ -1,4 +1,4 @@
-name: Codzienny olx_kato_rent
+name: Codzienny olx_tom_rent
 
 on:
   schedule:
@@ -29,9 +29,9 @@ jobs:
           ls -la
           find . -maxdepth 3 -type f -name "*.py" -print
 
-      - name: Run python olx_kato_rent.py
+      - name: Run python olx_tom_rent.py
         env:
           G_SHEETS_JSON: ${{ secrets.G_SHEETS_JSON }}
         run: |
           python -V
-          python ./olx_kato_rent.py
+          python ./olx_tom_rent.py
