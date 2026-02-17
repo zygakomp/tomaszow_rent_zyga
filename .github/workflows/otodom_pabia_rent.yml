@@ -2,7 +2,7 @@ name: Codzienny otodom_pabia_rent.py
 
 on:
   schedule:
-    - cron: '30 15 * * *'
+    - cron: '30 6 * * *'
   workflow_dispatch:
 
 jobs:
