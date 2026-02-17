@@ -58,75 +58,77 @@ def setup_selenium_driver():
 
 def process_page(driver):
     rows_to_append = []
-    print("Przewijanie strony dla załadowania ofert...")
-    for _ in range(4): # Przewijamy 4 razy
-        driver.execute_script("window.scrollBy(0, 800);")
-        time.sleep(1.5)
+    print("Przeszukuję stronę w poszukiwaniu ofert...")
+    
+    # Przewijanie, aby dociągnąć leniwe ładowanie (lazy loading)
+    driver.execute_script("window.scrollBy(0, 1000);")
+    time.sleep(2)
 
-    # Szukamy kart ogłoszeń wieloma metodami dla pewności
+    # Szukamy wszystkich artykułów (ogłoszeń)
     listing_cards = driver.find_elements(By.CSS_SELECTOR, 'article[data-cy="listing-item"]')
     if not listing_cards:
-        listing_cards = driver.find_elements(By.XPATH, "//article")
+        listing_cards = driver.find_elements(By.TAG_NAME, 'article')
 
-    print(f"Wykryto {len(listing_cards)} potencjalnych ogłoszeń.")
+    print(f"Wykryto {len(listing_cards)} ogłoszeń.")
 
     for card in listing_cards:
         try:
-            # Sprawdzenie czy to ogłoszenie (musi mieć link)
-            link_el = card.find_element(By.TAG_NAME, 'a')
-            link = link_el.get_attribute('href')
-            if not link or 'oferta/' not in link: continue
-
-            data_now = time.strftime("%Y-%m-%d %H:%M:%S")
+            full_text = card.text
+            lines = full_text.split('\n')
             
-            # --- TYTUŁ (Precyzyjne celowanie, by uniknąć "1 / 8") ---
-            try:
-                tytul = card.find_element(By.CSS_SELECTOR, '[data-cy="listing-item-title"]').text.strip()
-            except:
-                # Fallback: bierzemy tekst i czyścimy z liczników zdjęć
-                lines = card.text.split('\n')
-                tytul = lines[1] if len(lines) > 1 and '/' in lines[0] else lines[0]
+            # 1. Link i Data
+            link = card.find_element(By.TAG_NAME, 'a').get_attribute('href')
+            if 'oferta/' not in link: continue
+            data_now = time.strftime("%Y-%m-%d %H:%M:%S")
 
-            # --- ADRES ---
-            try:
-                adres = card.find_element(By.CSS_SELECTOR, '[data-cy="listing-item-address"]').text.strip()
-            except:
-                adres = "Tomaszów Mazowiecki"
+            # 2. Tytuł - inteligentne omijanie licznika zdjęć (np. "1 / 12")
+            tytul = lines[0]
+            if "/" in tytul and len(tytul) < 7: # Jeśli to np. "1 / 10", bierzemy następną linię
+                tytul = lines[1] if len(lines) > 1 else "Brak tytułu"
 
-            # --- CENA I CZYNSZ ---
-            try:
-                cena_raw = card.find_element(By.CSS_SELECTOR, '[data-cy="listing-item-price"]').text
-                cena = clean_and_convert_to_number(extract_numbers(cena_raw))
-            except: cena = 0
+            # 3. Adres - szukamy linii, która nie jest ceną ani tytułem
+            adres = "Tomaszów Mazowiecki"
+            for line in lines[1:4]:
+                if "zł" not in line and "/" not in line and len(line) > 5:
+                    adres = line
+                    break
 
-            full_text = card.text.lower()
-            czynsz = 0
-            match_cz = re.search(r'czynsz[:\s]*([\d\s,]+)', full_text)
-            if match_cz:
-                czynsz = clean_and_convert_to_number(extract_numbers(match_cz.group(1)))
+            # 4. CENA (Koszt najmu) - szukamy największej kwoty z "zł"
+            ceny_w_tekscie = re.findall(r'(\d[\d\s]*)\s*zł', full_text.replace('\xa0', ' '))
+            liczby_cen = sorted([int(extract_numbers(c)) for c in ceny_w_tekscie], reverse=True)
+            
+            # Najwyższa kwota to zazwyczaj cena najmu, mniejsza to czynsz
+            cena = liczby_cen[0] if len(liczby_cen) > 0 else 0
+            czynsz = liczby_cen[1] if len(liczby_cen) > 1 else 0
+            
+            # Jeśli czynsz w tekście jest wyraźnie opisany "+ czynsz"
+            match_czynsz = re.search(r'czynsz[:\s]*([\d\s]+)', full_text.lower())
+            if match_czynsz:
+                czynsz = clean_and_convert_to_number(extract_numbers(match_czynsz.group(1)))
 
-            # --- PARAMETRY (Pokoje, m2, Piętro) ---
-            pokoje, metraz, pietro = "0", "0", "0"
-            # Szukamy w spanach, które zawierają jednostki lub słowa kluczowe
-            for s in card.find_elements(By.TAG_NAME, 'span'):
-                t = s.text.lower()
-                if 'poko' in t: pokoje = extract_numbers(t)
-                elif 'm²' in t: metraz = extract_numbers(t)
-                elif 'piętro' in t: pietro = extract_numbers(t)
+            # 5. Parametry (Pokoje, Powierzchnia, Piętro)
+            pokoje, metraz, pietro = 0, 0, 0
+            for line in lines:
+                l_low = line.lower()
+                if 'poko' in l_low: pokoje = extract_numbers(line)
+                if 'm²' in l_low: metraz = extract_numbers(line)
+                if 'piętro' in l_low: pietro = extract_numbers(line)
 
-            # --- OFERENT ---
+            # 6. Oferent
             typ = "Oferta prywatna"
             wystawca = "Osoba prywatna"
-            if "biuro" in full_text or "nieruchomości" in full_text:
+            if "biuro" in full_text.lower() or "nieruchomości" in full_text.lower():
                 typ = "Biuro nieruchomości"
-                wystawca = card.text.split('\n')[-1] # Zazwyczaj nazwa biura jest na dole
+                wystawca = lines[-1] # Nazwa biura jest zazwyczaj na samym dole karty
 
-            rows_to_append.append([
+            row = [
                 data_now, link, tytul, adres, cena, czynsz, 
                 pokoje, metraz, pietro, typ, wystawca, 
                 "Brak Danych (Poza Kartą)", "Brak opisu (Poza Kartą)"
-            ])
-        except: continue
+            ]
+            rows_to_append.append(row)
+        except:
+            continue
             
     return rows_to_append
 
@@ -159,3 +161,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
