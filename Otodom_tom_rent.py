@@ -82,31 +82,50 @@ def handle_cookies(driver):
 
 def process_page(driver):
     rows_to_append = []
+    print("Szukam kart ogłoszeń na stronie...")
+    
+    # Próbujemy znaleźć ogłoszenia za pomocą różnych selektorów (Otodom je miesza)
     try:
         WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.XPATH, "//article[@data-sentry-component='AdvertCard']"))
+            EC.presence_of_element_located((By.CSS_SELECTOR, 'article[data-cy="listing-item"]'))
         )
     except:
-        return rows_to_append
+        print("Nie doczekano się na załadowanie kart listing-item. Próbuję mimo to...")
 
-    listing_cards = driver.find_elements(By.XPATH, "//article[@data-sentry-component='AdvertCard'] | //article[@data-sentry-component='VipAdvertCard']")
+    # Szukamy wszystkich artykułów, które wyglądają jak ogłoszenia
+    listing_cards = driver.find_elements(By.CSS_SELECTOR, 'article[data-cy="listing-item"]')
+    
+    # Jeśli nadal pusto, szukamy po sentry-component (stara metoda)
+    if not listing_cards:
+        listing_cards = driver.find_elements(By.XPATH, "//article[@data-sentry-component='AdvertCard'] | //article[@data-sentry-component='VipAdvertCard']")
+
+    print(f"Liczba wykrytych kart ogłoszeń: {len(listing_cards)}")
 
     for card in listing_cards:
         data_scrapingu = time.strftime("%Y-%m-%d %H:%M:%S")
         try:
-            link = card.find_element(By.XPATH, ".//a[@data-cy='listing-item-link']").get_attribute('href')
-            tytul = card.find_element(By.XPATH, ".//p[contains(@class, 'title')]").text.strip()
+            # Szukanie linku i tytułu
+            link_element = card.find_element(By.CSS_SELECTOR, 'a[data-cy="listing-item-link"]')
+            link = link_element.get_attribute('href')
             
-            # Pobieranie ceny głównej
+            # Tytuł jest zazwyczaj w h3 lub p wewnątrz linku
             try:
-                cena_raw = card.find_element(By.XPATH, ".//span[@data-sentry-element='MainPrice']").text
+                tytul = card.find_element(By.CSS_SELECTOR, 'p[data-cy="listing-item-title"]').text.strip()
+            except:
+                tytul = "Brak tytułu"
+
+            # Cena
+            try:
+                cena_raw = card.find_element(By.CSS_SELECTOR, 'span[data-cy="listing-item-price"]').text
                 cena = clean_and_convert_to_number(extract_numbers(cena_raw))
             except:
-                cena = "Brak Danych"
+                cena = "Brak danych"
                 
             rows_to_append.append([data_scrapingu, link, tytul, "", cena, "", "", "", "", "", "", "", ""])
-        except:
+        except Exception as e:
+            # Skipujemy pojedyncze błędy w kartach (np. reklamy)
             continue
+            
     return rows_to_append
 
 def main():
@@ -142,3 +161,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
