@@ -1,4 +1,4 @@
-name: Codzienny Otodom_tom_sell
+name: Codzienny otodom_tom_sell
 
 on:
   schedule:
@@ -29,9 +29,9 @@ jobs:
           ls -la
           find . -maxdepth 3 -type f -name "*.py" -print
 
-      - name: Run python Otodom_tom_sell.py
+      - name: Run python otodom_tom_sell.py
         env:
           G_SHEETS_JSON: ${{ secrets.G_SHEETS_JSON }}
         run: |
           python -V
-          python ./Otodom_tom_sell.py
+          python ./otodom_tom_sell.py
