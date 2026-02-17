@@ -2,7 +2,7 @@ name: Codzienny otodom_kato_rent
 
 on:
   schedule:
-    - cron: '0 10 * * *'
+    - cron: '0 15 * * *'
   workflow_dispatch:
 
 jobs:
