@@ -16,32 +16,20 @@ import re
 ARKUSZ_ID = '1JdrNZr4eeX8Vc1w-V7XgB2ysdnxAQg_KqCE3b6RHCtc'
 NAZWA_ZAKLADKI = 'TOM_OTO_Sprzedaz'
 URL_OTODOM = 'https://www.otodom.pl/pl/wyniki/sprzedaz/mieszkanie/lodzkie/tomaszowski/gmina-miejska--tomaszow-mazowiecki/tomaszow-mazowiecki'
+BASE_URL = 'https://www.otodom.pl'
 
 
 # --- FUNKCJE POMOCNICZE ---
 
 def extract_numbers(text):
-    """
-    Funkcja do ekstrakcji czystego ciągu cyfr (z kropką, jeśli to separator dziesiętny)
-    lub wartości 'Brak Danych' z tekstu.
-    """
     if not text:
         return 'Brak Danych'
-
     processed_text = text.replace('\xa0', ' ').replace(' ', '').replace(',', '.')
     match = re.search(r'(\d+\.?\d*)', processed_text)
-
-    if match:
-        return match.group(1)
-
-    return 'Brak Danych'
+    return match.group(1) if match else 'Brak Danych'
 
 
 def clean_and_convert_to_number(value):
-    """
-    Konwertuje string z liczbą na float (żeby Sheets rozpoznał typ liczbowy).
-    Jeśli 'Brak Danych' - zwraca tekst.
-    """
     if value == 'Brak Danych':
         return value
     try:
@@ -51,7 +39,7 @@ def clean_and_convert_to_number(value):
 
 
 def authorize_google_sheets():
-    """Autoryzacja i inicjalizacja połączenia z Arkuszem Google (GitHub Actions: ENV secret)."""
+    """Autoryzacja (GitHub Actions: ENV secret G_SHEETS_JSON)."""
     print("Autoryzacja do Google Sheets (ENV: G_SHEETS_JSON)...")
     try:
         creds_json = os.environ.get("G_SHEETS_JSON")
@@ -59,16 +47,12 @@ def authorize_google_sheets():
             raise Exception("Brak zmiennej środowiskowej G_SHEETS_JSON (dodaj secret w GitHub).")
 
         creds_dict = json.loads(creds_json)
-        scope = [
-            'https://spreadsheets.google.com/feeds',
-            'https://www.googleapis.com/auth/drive'
-        ]
+        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
 
         arkusz = client.open_by_key(ARKUSZ_ID)
 
-        # Próba otwarcia lub stworzenia zakładki
         try:
             zakladka = arkusz.worksheet(NAZWA_ZAKLADKI)
         except gspread.WorksheetNotFound:
@@ -82,7 +66,7 @@ def authorize_google_sheets():
             'URL Ogłoszenia',
             'Tytuł Ogłoszenia',
             'Adres',
-            'Koszt Najmu',
+            'Cena (sprzedaż) / Koszt Najmu',
             'Czynsz (dodatkowo)',
             'Liczba pokoi',
             'Powierzchnia',
@@ -97,7 +81,7 @@ def authorize_google_sheets():
             if not zakladka.row_values(1):
                 zakladka.append_row(naglowki)
             else:
-                print("Nagłówki już istnieją lub pierwszy wiersz nie jest pusty. Pomijam dodawanie nagłówków.")
+                print("Nagłówki już istnieją lub pierwszy wiersz nie jest pusty. Pomijam dodawanie.")
 
         return zakladka
 
@@ -107,7 +91,7 @@ def authorize_google_sheets():
 
 
 def setup_selenium_driver():
-    """Konfiguracja i uruchomienie sterownika Chrome pod GitHub Actions (headless Linux)."""
+    """Chrome headless pod GitHub Actions."""
     print("Uruchamianie Chrome (headless, GitHub Actions)...")
     try:
         options = webdriver.ChromeOptions()
@@ -124,7 +108,6 @@ def setup_selenium_driver():
 
         service = ChromeService(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=options)
-
         driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
         print("Chrome uruchomiony.")
@@ -135,7 +118,6 @@ def setup_selenium_driver():
 
 
 def handle_cookies(driver):
-    """Akceptacja komunikatu o ciasteczkach Otodom."""
     print("Próba akceptacji ciasteczek...")
     try:
         WebDriverWait(driver, 10).until(
@@ -144,21 +126,21 @@ def handle_cookies(driver):
         print("Ciasteczka zaakceptowane.")
         time.sleep(1)
     except TimeoutException:
-        print("Komunikat o ciasteczkach nie pojawił się lub został pominięty (lub już akceptowano).")
+        print("Komunikat o ciasteczkach nie pojawił się / już zaakceptowano.")
     except Exception as e:
         print(f"Nie udało się zaakceptować ciasteczek: {e}")
 
 
 def process_page(driver):
-    """Pobiera dane z aktualnej strony z listą ogłoszeń."""
     rows_to_append = []
 
+    # poczekaj na karty
     try:
         WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.XPATH, "//article[@data-sentry-component='AdvertCard']"))
+            EC.presence_of_element_located((By.XPATH, "//article[@data-sentry-component='AdvertCard' or @data-sentry-component='VipAdvertCard']"))
         )
     except TimeoutException:
-        print("BŁĄD: Nie znaleziono żadnych kart ogłoszeń na stronie po 15s.")
+        print("BŁĄD: Nie znaleziono kart ogłoszeń po 15s.")
         return rows_to_append
 
     listing_cards = driver.find_elements(
@@ -167,7 +149,7 @@ def process_page(driver):
     )
 
     if not listing_cards:
-        print("OSTRZEŻENIE: Nie znaleziono żadnych kart ogłoszeń na bieżącej stronie.")
+        print("OSTRZEŻENIE: Brak kart ogłoszeń na stronie.")
         return rows_to_append
 
     print(f"Znaleziono {len(listing_cards)} ogłoszeń do przetworzenia.")
@@ -176,8 +158,8 @@ def process_page(driver):
         data_scrapingu = time.strftime("%Y-%m-%d %H:%M:%S")
         link, tytul, adres = "Brak linku", "Brak tytułu", "Brak adresu"
 
-        cena_najmu_text = "Brak Danych"
-        czynsz_oplaty_text = "Brak Danych"
+        cena_text = "Brak Danych"
+        czynsz_text = "Brak Danych"
         liczba_pokoi_text = "Brak Danych"
         powierzchnia_text = "Brak Danych"
         pietro_text = "Brak Danych"
@@ -210,22 +192,23 @@ def process_page(driver):
         except NoSuchElementException:
             pass
 
-        # 2) Cena i czynsz (tak jak w Twoim HTML)
+        # 2) Cena (MainPrice) i “czynsz” (TYLKO jeśli tekst faktycznie zawiera czynsz)
         try:
-            # koszt najmu: <span data-sentry-element="MainPrice">1550&nbsp;zł</span>
-            cena_najmu_element = card.find_element(By.XPATH, ".//span[@data-sentry-element='MainPrice']")
-            cena_najmu_text = (cena_najmu_element.text or "").strip()
-
-            # czynsz: "+ czynsz: 600 zł/miesiąc"
-            try:
-                czynsz_oplaty_element = card.find_element(By.XPATH, ".//span[contains(@class, 'eanmlll2')]")
-                czynsz_oplaty_text = (czynsz_oplaty_element.text or "").strip()
-                # nie usuwamy agresywnie, bo format bywa "+ czynsz: 600 zł/miesiąc"
-                # wyciągniemy liczby niżej przez extract_numbers()
-            except NoSuchElementException:
-                czynsz_oplaty_text = "Brak info o czynszu"
+            cena_el = card.find_element(By.XPATH, ".//span[@data-sentry-element='MainPrice']")
+            cena_text = (cena_el.text or "").strip()
         except NoSuchElementException:
             pass
+
+        try:
+            # na Otodom ten drugi span bywa różny; bierzemy go tylko gdy zawiera słowo "czynsz"
+            fee_el = card.find_element(By.XPATH, ".//span[contains(@class, 'eanmlll2')]")
+            tmp = (fee_el.text or "").strip()
+            if "czynsz" in tmp.lower():
+                czynsz_text = tmp
+            else:
+                czynsz_text = "Brak Danych"
+        except NoSuchElementException:
+            czynsz_text = "Brak Danych"
 
         # 3) Parametry (pokoje / powierzchnia / piętro)
         try:
@@ -246,13 +229,13 @@ def process_page(driver):
 
         # 4) Typ oferenta / wystawca
         try:
-            typ_oferenta_element = card.find_element(By.XPATH, ".//span[contains(@class, 'e11ruw5v4')]")
-            typ_oferenta = typ_oferenta_element.text.strip()
+            typ_el = card.find_element(By.XPATH, ".//span[contains(@class, 'e11ruw5v4')]")
+            typ_oferenta = typ_el.text.strip()
 
             if 'Prywatna' not in typ_oferenta:
                 try:
-                    wystawca_element = card.find_element(By.XPATH, ".//span[contains(@class, 'css-g6wttb')]")
-                    wystawca_nazwa = wystawca_element.text.strip()
+                    wyst_el = card.find_element(By.XPATH, ".//span[contains(@class, 'css-g6wttb')]")
+                    wystawca_nazwa = wyst_el.text.strip()
                 except NoSuchElementException:
                     try:
                         wystawca_nazwa = card.find_element(By.XPATH, ".//span[@data-sentry-element='OwnerName']").text.strip()
@@ -263,28 +246,22 @@ def process_page(driver):
         except Exception:
             pass
 
-        # --- KONWERSJE DO LICZB ---
-        raw_cena_najmu = extract_numbers(cena_najmu_text)
-        raw_czynsz_oplaty = extract_numbers(czynsz_oplaty_text)
-        raw_liczba_pokoi = extract_numbers(liczba_pokoi_text)
-        raw_powierzchnia = extract_numbers(powierzchnia_text)
-        raw_pietro = extract_numbers(pietro_text)
+        # --- KONWERSJE ---
+        cena = clean_and_convert_to_number(extract_numbers(cena_text))
+        czynsz = clean_and_convert_to_number(extract_numbers(czynsz_text))
+        liczba_pokoi = clean_and_convert_to_number(extract_numbers(liczba_pokoi_text))
+        powierzchnia = clean_and_convert_to_number(extract_numbers(powierzchnia_text))
+        pietro = clean_and_convert_to_number(extract_numbers(pietro_text))
 
-        cena_najmu = clean_and_convert_to_number(raw_cena_najmu)
-        czynsz_oplaty = clean_and_convert_to_number(raw_czynsz_oplaty)
-        liczba_pokoi = clean_and_convert_to_number(raw_liczba_pokoi)
-        powierzchnia = clean_and_convert_to_number(raw_powierzchnia)
-        pietro = clean_and_convert_to_number(raw_pietro)
-
-        print(f"[{i + 1}/{len(listing_cards)}] Tytuł: {tytul} | Najem: {cena_najmu} | Czynsz: {czynsz_oplaty}")
+        print(f"[{i + 1}/{len(listing_cards)}] Tytuł: {tytul} | Cena: {cena} | Czynsz: {czynsz}")
 
         row_to_save = [
             data_scrapingu,
             link,
             tytul,
             adres,
-            cena_najmu,       # kolumna E
-            czynsz_oplaty,    # kolumna F
+            cena,        # kol. E
+            czynsz,      # kol. F (tylko jeśli faktycznie jest czynsz)
             liczba_pokoi,
             powierzchnia,
             pietro,
@@ -301,8 +278,31 @@ def process_page(driver):
     return rows_to_append
 
 
+def get_next_page_url(driver):
+    """
+    Otodom ma paginację jako <a title="Go to next Page" ... href="...">
+    Zwraca pełny URL następnej strony albo None.
+    """
+    try:
+        # to jest dokładnie Twój HTML:
+        # <a ... title="Go to next Page" ... href="/...?...page=3">
+        next_link = WebDriverWait(driver, 6).until(
+            EC.presence_of_element_located((By.XPATH, "//a[@title='Go to next Page' or @aria-label='Go to next Page']"))
+        )
+        href = next_link.get_attribute("href")
+        if not href:
+            return None
+        # czasem href jest względny
+        if href.startswith("/"):
+            href = BASE_URL + href
+        return href
+    except TimeoutException:
+        return None
+    except Exception:
+        return None
+
+
 def main_scraper():
-    """Główna funkcja skanująca listę ogłoszeń i zapisująca dane do Sheets."""
     zakladka = authorize_google_sheets()
     if not zakladka:
         return
@@ -330,29 +330,15 @@ def main_scraper():
             except Exception as e:
                 print(f"BŁĄD przetwarzania strony {current_page}: {e}")
 
-            next_page_button_xpath = "//button[@title='Go to next Page']"
-
-            try:
-                next_button = WebDriverWait(driver, 6).until(
-                    EC.element_to_be_clickable((By.XPATH, next_page_button_xpath))
-                )
-
-                if next_button.get_attribute('disabled') == 'true' or 'disabled' in (next_button.get_attribute('class') or ''):
-                    print("Przycisk 'Następna strona' jest nieaktywny. Koniec ogłoszeń.")
-                    break
-
-                try:
-                    next_button.click()
-                except ElementClickInterceptedException:
-                    print("Przycisk 'Następna strona' przesłonięty -> klik JS.")
-                    driver.execute_script("arguments[0].click();", next_button)
-
-                current_page += 1
-                time.sleep(6)
-
-            except TimeoutException:
-                print("Nie znaleziono przycisku 'Następna strona' (Timeout). Koniec paginacji.")
+            next_url = get_next_page_url(driver)
+            if not next_url:
+                print("Nie znaleziono linku 'Go to next Page' -> koniec paginacji.")
                 break
+
+            current_page += 1
+            print(f"Przechodzę na: {next_url}")
+            driver.get(next_url)
+            time.sleep(7)
 
         if all_rows_to_append:
             print(f"\nZapisuję {len(all_rows_to_append)} wierszy do Arkusza Google...")
@@ -373,7 +359,6 @@ def main_scraper():
             print("--- PRZEGLĄDARKA ZAMKNIĘTA ---")
 
 
-# --- START (GitHub Actions: uruchom raz i zakończ) ---
 if __name__ == "__main__":
     print("\n" + "=" * 50)
     print("--- START SCRAPOWANIA OTODOM (GITHUB ACTIONS) ---")
