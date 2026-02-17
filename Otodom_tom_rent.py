@@ -107,7 +107,6 @@ def parse_rent_and_fees(card_text):
     koszt_najmu = max(rent_candidates) if rent_candidates else 0
     czynsz = max(fee_candidates) if fee_candidates else 0
 
-    # asekuracja: jeśli w tekście jest "czynsz", a nie złapaliśmy kontekstu
     if czynsz == 0 and ('czynsz' in txt_low):
         all_amounts = []
         for m in matches:
@@ -127,62 +126,68 @@ def parse_rent_and_fees(card_text):
 
 def extract_prices_from_card_dom(card):
     """
-    POPRAWIONE:
-    - cena główna: szukamy po aria-label="Cena" / data-cy="adPageHeaderPrice"
-      a jak nie ma -> regex na innerHTML
-    - czynsz: bierzemy WYŁĄCZNIE kwotę po słowie 'Czynsz' (regex),
-      żeby nie złapać 1500 z tej samej sekcji.
+    POPRAWIONE POD TWÓJ HTML:
+    - koszt najmu: <span data-sentry-element="MainPrice">1550&nbsp;zł</span>
+    - czynsz:      "+ czynsz: 600 zł/miesiąc" (wyciągamy TYLKO kwotę po słowie czynsz)
     Zwraca: (koszt_najmu, czynsz)
     """
     koszt_najmu = 0
     czynsz = 0
 
-    # 1) Spróbuj wyciągnąć CENĘ GŁÓWNĄ z DOM (najpewniej)
-    try:
-        # dokładnie jak w Twoim HTML
-        el = card.find_elements(By.CSS_SELECTOR, 'strong[data-cy="adPageHeaderPrice"]')
-        if el:
-            t = (el[0].text or "").strip()
-            if 'zł' in t.lower():
-                koszt_najmu = _to_amount(t)
-    except:
-        pass
+    # --- 1) KOSZT NAJMU (MainPrice) z DOM ---
+    # próbujemy po stabilnych atrybutach, nie po klasach css-xxxx
+    main_price_selectors = [
+        'span[data-sentry-element="MainPrice"]',
+        '[data-sentry-element="MainPrice"]',
+        'span[data-sentry-element="MainPrice"][class]',
+        # czasem komponent jest w środku, ale data-sentry-element zostaje
+    ]
 
-    if koszt_najmu == 0:
+    for sel in main_price_selectors:
         try:
-            el = card.find_elements(By.CSS_SELECTOR, 'strong[aria-label="Cena"]')
-            if el:
-                t = (el[0].text or "").strip()
-                if 'zł' in t.lower():
-                    koszt_najmu = _to_amount(t)
+            els = card.find_elements(By.CSS_SELECTOR, sel)
+            for el in els:
+                # text bywa pusty; textContent zwykle działa
+                t = (el.text or "").strip()
+                if not t:
+                    try:
+                        t = (el.get_attribute("textContent") or "").strip()
+                    except:
+                        t = ""
+                if t and 'zł' in t.lower():
+                    val = _to_amount(t)
+                    if val > koszt_najmu:
+                        koszt_najmu = val
         except:
             pass
 
-    # 2) Jeśli nadal 0, weź innerHTML i wytnij regexem cenę z nagłówka
-    #    (bo .text na liście czasem nie łapie)
+    # --- 2) innerHTML fallback (gdy Selenium .text nie łapie) ---
     inner_html = ""
     try:
         inner_html = card.get_attribute("innerHTML") or ""
     except:
         inner_html = ""
 
-    if koszt_najmu == 0 and inner_html:
-        # aria-label="Cena" ... >1 500 zł<
-        m = re.search(r'aria-label="Cena"[^>]*>\s*([\d\s,\.]+)\s*zł\s*<', inner_html, flags=re.IGNORECASE)
-        if not m:
-            # data-cy="adPageHeaderPrice" ... >1 500 zł<
-            m = re.search(r'data-cy="adPageHeaderPrice"[^>]*>\s*([\d\s,\.]+)\s*zł\s*<', inner_html, flags=re.IGNORECASE)
-        if m:
-            koszt_najmu = _to_amount(m.group(1))
-
-    # 3) CZYNSZ: tylko kwota po słowie "Czynsz"
-    #    np. "+ Czynsz 500 zł"
     if inner_html:
-        m_fee = re.search(r'czynsz[^0-9]*([\d\s,\.]+)\s*zł', inner_html, flags=re.IGNORECASE)
+        # normalizacja &nbsp; żeby regex złapał liczbę
+        ih = inner_html.replace("&nbsp;", " ").replace("\xa0", " ")
+
+        if koszt_najmu == 0:
+            # <span data-sentry-element="MainPrice" ...>1550 zł</span>
+            m = re.search(
+                r'data-sentry-element="MainPrice"[^>]*>\s*([\d\s,\.]+)\s*zł',
+                ih,
+                flags=re.IGNORECASE
+            )
+            if m:
+                koszt_najmu = _to_amount(m.group(1))
+
+        # --- 3) CZYNSZ: tylko kwota po słowie czynsz (nie łapie 1550) ---
+        m_fee = re.search(r'czynsz[^0-9]*([\d\s,\.]+)\s*zł', ih, flags=re.IGNORECASE)
         if m_fee:
             czynsz = _to_amount(m_fee.group(1))
 
-    # 4) Dodatkowa asekuracja: jeśli innerHTML nie ma, spróbuj z innerText
+    # --- 4) Asekuracja dla czynszu z innerText, gdyby HTML był okrojony ---
     if czynsz == 0:
         try:
             inner_text = (card.get_attribute("innerText") or "").replace('\xa0', ' ')
@@ -245,6 +250,7 @@ def process_page(driver):
             cena_najmu_dom, czynsz_dom = extract_prices_from_card_dom(card)
             cena_najmu_txt, czynsz_txt = parse_rent_and_fees(card_text)
 
+            # preferuj DOM; jeśli DOM nie dał ceny, weź fallback z tekstu
             cena_najmu = cena_najmu_dom if cena_najmu_dom > 0 else cena_najmu_txt
             czynsz = czynsz_dom if czynsz_dom > 0 else czynsz_txt
 
@@ -266,8 +272,7 @@ def process_page(driver):
                 typ = "Biuro nieruchomości"
                 wystawca = lines[-1] if len(lines) > 0 else "Biuro"
 
-            # UWAGA: kolejność kolumn jest DOBRA:
-            # E = cena_najmu, F = czynsz
+            # E = cena_najmu, F = czynsz (TAKO MA BYĆ)
             rows_to_append.append([
                 data_now, link, tytul, adres,
                 cena_najmu, czynsz,
