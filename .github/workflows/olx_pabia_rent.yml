@@ -1,0 +1,37 @@
+name: Codzienny olx_pabia_rent
+
+on:
+  schedule:
+    - cron: '30 13 * * *'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Pobierz kod z repozytorium
+        uses: actions/checkout@v4
+
+      - name: Zainstaluj Pythona
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Zainstaluj biblioteki
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Lista plików (debug)
+        run: |
+          pwd
+          ls -la
+          find . -maxdepth 3 -type f -name "*.py" -print
+
+      - name: Run python olx_pabia_rent.py
+        env:
+          G_SHEETS_JSON: ${{ secrets.G_SHEETS_JSON }}
+        run: |
+          python -V
+          python ./olx_pabia_rent.py
