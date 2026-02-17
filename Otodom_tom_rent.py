@@ -19,8 +19,8 @@ URL_OTODOM = 'https://www.otodom.pl/pl/wyniki/wynajem/mieszkanie/lodzkie/tomaszo
 
 def extract_numbers(text):
     if not text: return '0'
-    processed_text = text.replace(' ', '').replace(',', '.')
-    match = re.search(r'(\d+\.?\d*)', processed_text)
+    text = text.replace('\xa0', '').replace(' ', '').replace(',', '.')
+    match = re.search(r'(\d+\.?\d*)', text)
     return match.group(1) if match else '0'
 
 def clean_and_convert_to_number(value):
@@ -46,99 +46,90 @@ def setup_selenium_driver():
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--window-size=1920,1080')
-    # Kluczowe: udawanie prawdziwej przeglądarki
     options.add_argument('--disable-blink-features=AutomationControlled')
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
-    options.add_argument('--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36')
+    options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36')
     
     service = ChromeService(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=options)
-    # Ukrywanie faktu bycia botem przed skryptami JS
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     return driver
 
 def process_page(driver):
     rows_to_append = []
-    # Przewijanie dla załadowania elementów
-    driver.execute_script("window.scrollTo(0, document.body.scrollHeight/2);")
-    time.sleep(1)
-    
-    # Szukamy konkretnych kart ogłoszeń
+    print("Przewijanie strony dla załadowania ofert...")
+    for _ in range(4): # Przewijamy 4 razy
+        driver.execute_script("window.scrollBy(0, 800);")
+        time.sleep(1.5)
+
+    # Szukamy kart ogłoszeń wieloma metodami dla pewności
     listing_cards = driver.find_elements(By.CSS_SELECTOR, 'article[data-cy="listing-item"]')
-    print(f"Znaleziono {len(listing_cards)} ogłoszeń.")
+    if not listing_cards:
+        listing_cards = driver.find_elements(By.XPATH, "//article")
+
+    print(f"Wykryto {len(listing_cards)} potencjalnych ogłoszeń.")
 
     for card in listing_cards:
         try:
-            # 1. Podstawowe dane (Tytuł, Link, Adres)
-            link_el = card.find_element(By.CSS_SELECTOR, 'a[data-cy="listing-item-link"]')
+            # Sprawdzenie czy to ogłoszenie (musi mieć link)
+            link_el = card.find_element(By.TAG_NAME, 'a')
             link = link_el.get_attribute('href')
-            
-            # Pobieramy konkretnie tytuł, pomijając licznik zdjęć
-            tytul = card.find_element(By.CSS_SELECTOR, 'p[data-cy="listing-item-title"]').text.strip()
-            
-            # Pobieramy konkretnie adres
-            try:
-                adres = card.find_element(By.CSS_SELECTOR, 'p[data-cy="listing-item-address"]').text.strip()
-            except:
-                adres = "Brak adresu"
+            if not link or 'oferta/' not in link: continue
 
-            # 2. Cena i Czynsz
-            full_card_text = card.text.lower()
+            data_now = time.strftime("%Y-%m-%d %H:%M:%S")
+            
+            # --- TYTUŁ (Precyzyjne celowanie, by uniknąć "1 / 8") ---
             try:
-                cena_raw = card.find_element(By.CSS_SELECTOR, 'span[data-cy="listing-item-price"]').text
+                tytul = card.find_element(By.CSS_SELECTOR, '[data-cy="listing-item-title"]').text.strip()
+            except:
+                # Fallback: bierzemy tekst i czyścimy z liczników zdjęć
+                lines = card.text.split('\n')
+                tytul = lines[1] if len(lines) > 1 and '/' in lines[0] else lines[0]
+
+            # --- ADRES ---
+            try:
+                adres = card.find_element(By.CSS_SELECTOR, '[data-cy="listing-item-address"]').text.strip()
+            except:
+                adres = "Tomaszów Mazowiecki"
+
+            # --- CENA I CZYNSZ ---
+            try:
+                cena_raw = card.find_element(By.CSS_SELECTOR, '[data-cy="listing-item-price"]').text
                 cena = clean_and_convert_to_number(extract_numbers(cena_raw))
-            except:
-                cena = 0
+            except: cena = 0
 
-            # Szukanie czynszu w tekście karty
+            full_text = card.text.lower()
             czynsz = 0
-            if "+ czynsz" in full_card_text:
-                match_cz = re.search(r'czynsz[:\s]*([\d\s,]+)', full_card_text)
-                if match_cz:
-                    czynsz = clean_and_convert_to_number(extract_numbers(match_cz.group(1)))
+            match_cz = re.search(r'czynsz[:\s]*([\d\s,]+)', full_text)
+            if match_cz:
+                czynsz = clean_and_convert_to_number(extract_numbers(match_cz.group(1)))
 
-            # 3. Parametry (Pokoje, m2, Piętro) - szukamy wewnątrz listy <dl>
+            # --- PARAMETRY (Pokoje, m2, Piętro) ---
             pokoje, metraz, pietro = "0", "0", "0"
-            specs = card.find_elements(By.CSS_SELECTOR, 'dl div')
-            for spec in specs:
-                t = spec.text.lower()
+            # Szukamy w spanach, które zawierają jednostki lub słowa kluczowe
+            for s in card.find_elements(By.TAG_NAME, 'span'):
+                t = s.text.lower()
                 if 'poko' in t: pokoje = extract_numbers(t)
                 elif 'm²' in t: metraz = extract_numbers(t)
                 elif 'piętro' in t: pietro = extract_numbers(t)
 
-            # 4. Typ Oferenta i Wystawca
-            typ_oferenta = "Oferta prywatna"
+            # --- OFERENT ---
+            typ = "Oferta prywatna"
             wystawca = "Osoba prywatna"
-            
-            # Jeśli w karcie jest wzmianka o biurze/agencji
-            if "biuro" in full_card_text or "nieruchomości" in full_card_text:
-                typ_oferenta = "Biuro nieruchomości"
-                # Próba wyciągnięcia nazwy biura (zazwyczaj ostatnia linia tekstu)
-                lines = card.text.split('\n')
-                wystawca = lines[-1] if len(lines) > 0 else "Biuro"
+            if "biuro" in full_text or "nieruchomości" in full_text:
+                typ = "Biuro nieruchomości"
+                wystawca = card.text.split('\n')[-1] # Zazwyczaj nazwa biura jest na dole
 
-            row = [
-                time.strftime("%Y-%m-%d %H:%M:%S"),
-                link,
-                tytul,
-                adres,
-                cena,
-                czynsz,
-                pokoje,
-                metraz,
-                pietro,
-                typ_oferenta,
-                wystawca,
-                "Brak Danych (Poza Kartą)",
-                "Brak opisu (Poza Kartą)"
-            ]
-            rows_to_append.append(row)
-            
-        except Exception as e:
-            continue
+            rows_to_append.append([
+                data_now, link, tytul, adres, cena, czynsz, 
+                pokoje, metraz, pietro, typ, wystawca, 
+                "Brak Danych (Poza Kartą)", "Brak opisu (Poza Kartą)"
+            ])
+        except: continue
             
     return rows_to_append
+
 def main():
     zakladka = authorize_google_sheets()
     driver = setup_selenium_driver()
@@ -147,28 +138,24 @@ def main():
     try:
         print(f"Otwieram: {URL_OTODOM}")
         driver.get(URL_OTODOM)
-        time.sleep(10) # Czekamy aż wszystko (reklamy, skrypty) się załaduje
+        time.sleep(15) # Więcej czasu na załadowanie (ważne w GitHub Actions)
         
-        # Akceptacja cookies
         try:
-            WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))).click()
+            btn = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler")))
+            btn.click()
             print("Cookies OK.")
         except: pass
         
         data = process_page(driver)
-        
         if data:
             print(f"Zapisuję {len(data)} ofert...")
             zakladka.append_rows(data)
-            print("SUKCES!")
+            print("ZAPIS ZAKOŃCZONY!")
         else:
-            print("Nadal nie widzę ofert. Prawdopodobna blokada bota (Captcha).")
-            # Log dla Ciebie: co widzi przeglądarka?
-            print(f"Tytuł strony: {driver.title}")
+            print(f"Nie znaleziono ofert. Tytuł strony: {driver.title}")
             
     finally:
-        driver.quit()
+        if driver: driver.quit()
 
 if __name__ == "__main__":
     main()
-
