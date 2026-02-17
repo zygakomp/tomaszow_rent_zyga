@@ -25,5 +25,7 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      - name: Uruchom skrypt
-        run: python Otodom_tom_rent.py # Zmień main.py na nazwę Twojego pliku!
+      - name: Run python Otodom_tom_rent.py
+        env:
+          G_SHEETS_JSON: ${{ secrets.G_SHEETS_JSON }}
+        run: python Otodom_tom_rent.py
