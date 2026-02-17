@@ -1,4 +1,4 @@
-name: Otodom Scraper
+name: otodom_tom_rent
 
 on:
   schedule:
