@@ -26,4 +26,4 @@ jobs:
         env:
           G_SHEETS_JSON: ${{ secrets.G_SHEETS_JSON }}
         run: |
-          python your_script_name.py
+          python your_script_rent.py
