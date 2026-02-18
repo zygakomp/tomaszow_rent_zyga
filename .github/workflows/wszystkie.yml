@@ -4,8 +4,10 @@ on:
   schedule:
     # Uruchamia się co 12 godzin (05:30 i 17:30 UTC)
     # W Polsce (czas zimowy) to 06:30 i 18:30
-    - cron: '30 5,17 * * *'
+    - cron: '30 */12 * * *'
   workflow_dispatch: # Przycisk do ręcznego odpalania
+
+    
 
 jobs:
   automation-job:
