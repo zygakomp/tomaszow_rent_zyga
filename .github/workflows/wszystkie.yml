@@ -26,22 +26,43 @@ jobs:
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
       # SKRYPT 1: SPRZEDAŻ
-      - name: Uruchom - OTODOM SELL
+      - name: Uruchom - OTODOM Tomaszow SELL
         continue-on-error: true
         env:
           G_SHEETS_JSON: ${{ secrets.G_SHEETS_JSON }}
         run: python ./otodom_tom_sell.py
 
       # SKRYPT 2: WYNAJEM
-      - name: Uruchom - OTODOM RENT
+      - name: Uruchom - OTODOM Tomaszow RENT
         continue-on-error: true
         env:
           G_SHEETS_JSON: ${{ secrets.G_SHEETS_JSON }}
         run: python ./otodom_tom_rent.py
 
       # SKRYPT 3: DODATKOWY (np. statystyki lub inny plik)
-      - name: Uruchom - INNY SKRYPT
+      - name: Uruchom - OTODOM Pabianice RENT
         continue-on-error: true
         env:
           G_SHEETS_JSON: ${{ secrets.G_SHEETS_JSON }}
-        run: python ./twoj_trzeci_skrypt.py
+        run: python ./otodom_pabia_rent.py
+
+      # SKRYPT 4: DODATKOWY (np. statystyki lub inny plik)
+      - name: Uruchom - OTODOM Katowice RENT
+        continue-on-error: true
+        env:
+          G_SHEETS_JSON: ${{ secrets.G_SHEETS_JSON }}
+        run: python ./otodom_kato_rent.py
+        
+      # SKRYPT 5: DODATKOWY (np. statystyki lub inny plik)
+      - name: Uruchom - OLX Tomaszow RENT
+        continue-on-error: true
+        env:
+          G_SHEETS_JSON: ${{ secrets.G_SHEETS_JSON }}
+        run: python ./olx_tom_rent.py
+
+      # SKRYPT 6: DODATKOWY (np. statystyki lub inny plik)
+      - name: Uruchom - OLX Pabianice Rent
+        continue-on-error: true
+        env:
+          G_SHEETS_JSON: ${{ secrets.G_SHEETS_JSON }}
+        run: python ./olx_pabia_rent.py
