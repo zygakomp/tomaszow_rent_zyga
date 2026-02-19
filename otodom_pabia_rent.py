@@ -19,7 +19,7 @@ WARSAW_TZ = ZoneInfo("Europe/Warsaw")
 
 # --- KONFIGURACJA ---
 ARKUSZ_ID = '1JdrNZr4eeX8Vc1w-V7XgB2ysdnxAQg_KqCE3b6RHCtc'
-NAZWA_ZAKLADKI = 'Pabianice_Najem_OTO'
+NAZWA_ZAKLADKI = 'otodom_pabia_rent'
 URL_OTODOM = 'https://www.otodom.pl/pl/wyniki/wynajem/lokal/lodzkie/pabianicki/gmina-miejska--pabianice/pabianice?by=DEFAULT&direction=DESC'
 
 def extract_numbers(text):
