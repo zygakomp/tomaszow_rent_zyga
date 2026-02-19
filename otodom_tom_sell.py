@@ -74,10 +74,10 @@ def authorize_google_sheets():
             'URL Ogłoszenia',
             'Tytuł Ogłoszenia',
             'Adres',
-            'Cena (sprzedaż)',
-            'Czynsz (dodatkowo)',
+            'Cena (sprzedaż)',      # E
+            'Cena za m2',           # F  <-- ZMIANA: było "Czynsz (dodatkowo)"
             'Liczba pokoi',
-            'Powierzchnia',
+            'Powierzchnia',         # H
             'Piętro',
             'Typ Oferenta',
             'Wystawca (Nazwa)',
@@ -168,7 +168,7 @@ def process_page(driver):
         link, tytul, adres = "Brak linku", "Brak tytułu", "Brak adresu"
 
         cena_text = "Brak Danych"
-        czynsz_text = "Brak Danych"
+        czynsz_text = "Brak Danych"  # dalej pobieramy, ale nie zapisujemy już do kolumny F
         liczba_pokoi_text = "Brak Danych"
         powierzchnia_text = "Brak Danych"
         pietro_text = "Brak Danych"
@@ -208,7 +208,7 @@ def process_page(driver):
         except NoSuchElementException:
             pass
 
-        # czynsz tylko jeśli w tekście jest "czynsz"
+        # czynsz tylko jeśli w tekście jest "czynsz" (zostaje, ale kolumna F będzie liczone)
         try:
             fee_el = card.find_element(By.XPATH, ".//span[contains(@class, 'eanmlll2')]")
             tmp = (fee_el.text or "").strip()
@@ -226,7 +226,7 @@ def process_page(driver):
 
                     if 'Liczba pokoi' in key:
                         liczba_pokoi_text = value
-                    elif 'Cena za metr kwadratowy' in key or 'Powierzchnia' in key:
+                    elif 'Powierzchnia' in key:
                         powierzchnia_text = value
                     elif 'Piętro' in key:
                         pietro_text = value
@@ -259,17 +259,25 @@ def process_page(driver):
         powierzchnia = clean_and_convert_to_number(extract_numbers(powierzchnia_text))
         pietro = clean_and_convert_to_number(extract_numbers(pietro_text))
 
-        print(f"[{i + 1}/{len(listing_cards)}] Tytuł: {tytul} | Cena: {cena} | Czynsz: {czynsz}")
+        # --- ZMIANA: kolumna F = cena za m2 = E / H ---
+        cena_za_m2 = "Brak Danych"
+        if isinstance(cena, (int, float)) and isinstance(powierzchnia, (int, float)) and powierzchnia not in (0, 0.0):
+            try:
+                cena_za_m2 = round(cena / powierzchnia, 2)
+            except Exception:
+                cena_za_m2 = "Brak Danych"
+
+        print(f"[{i + 1}/{len(listing_cards)}] Tytuł: {tytul} | Cena: {cena} | m2: {powierzchnia} | Cena/m2: {cena_za_m2} | Czynsz: {czynsz}")
 
         rows_to_append.append([
             data_scrapingu,
             link,
             tytul,
             adres,
-            cena,
-            czynsz,
+            cena,          # E
+            cena_za_m2,    # F  <-- ZMIANA: zamiast czynsz
             liczba_pokoi,
-            powierzchnia,
+            powierzchnia,  # H
             pietro,
             typ_oferenta,
             wystawca_nazwa,
