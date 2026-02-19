@@ -1,6 +1,8 @@
+import gspread
 import os
 import json
-import gspread
+import time
+import re
 from oauth2client.service_account import ServiceAccountCredentials
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
@@ -8,371 +10,316 @@ from webdriver_manager.chrome import ChromeDriverManager
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
-import time
-import re
+from selenium.webdriver.chrome.options import Options
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-# --- KONFIGURACJA SKRYPTU ---
-ARKUSZ_ID = '1JdrNZr4eeX8Vc1w-V7XgB2ysdnxAQg_KqCE3b6RHCtc'
-NAZWA_ZAKLADKI = 'Pabianice_Najem_OTO'
-URL_OTODOM = 'https://www.otodom.pl/pl/wyniki/wynajem/lokal/lodzkie/pabianicki/gmina-miejska--pabianice/pabianice?by=DEFAULT&direction=DESC'
-BASE_URL = 'https://www.otodom.pl'
-
-# --- LIMIT STRON (DOMYŚLNIE 5, możesz zmienić w kodzie lub ENV MAX_PAGES) ---
-MAX_STRON = int(os.environ.get("MAX_PAGES", "5"))
-
-# --- STREFA CZASOWA (PL) ---
 WARSAW_TZ = ZoneInfo("Europe/Warsaw")
 
 
-# --- FUNKCJE POMOCNICZE ---
-
-def now_pl_str():
-    return datetime.now(WARSAW_TZ).strftime("%Y-%m-%d %H:%M:%S")
-
+# --- KONFIGURACJA ---
+ARKUSZ_ID = '1JdrNZr4eeX8Vc1w-V7XgB2ysdnxAQg_KqCE3b6RHCtc'
+NAZWA_ZAKLADKI = 'Pabianice_Najem_OTO'
+URL_OTODOM = 'https://www.otodom.pl/pl/wyniki/wynajem/lokal/lodzkie/pabianicki/gmina-miejska--pabianice/pabianice?by=DEFAULT&direction=DESC'
 
 def extract_numbers(text):
-    """
-    Ekstrakcja liczby z tekstu (np. '3 500 zł' -> '3500', '43 m²' -> '43')
-    Zwraca 'Brak Danych' gdy nie ma liczby.
-    """
     if not text:
-        return 'Brak Danych'
-    processed_text = text.replace('\xa0', ' ').replace(' ', '').replace(',', '.')
-    match = re.search(r'(\d+\.?\d*)', processed_text)
-    return match.group(1) if match else 'Brak Danych'
-
+        return '0'
+    text = text.replace('\xa0', '').replace(' ', '').replace(',', '.')
+    match = re.search(r'(\d+\.?\d*)', text)
+    return match.group(1) if match else '0'
 
 def clean_and_convert_to_number(value):
-    """
-    '3500' -> 3500.0, 'Brak Danych' -> 'Brak Danych'
-    """
-    if value == 'Brak Danych':
-        return value
     try:
         return float(value)
-    except ValueError:
-        return value
-
+    except:
+        return 0
 
 def authorize_google_sheets():
-    """Autoryzacja (GitHub Actions: ENV secret G_SHEETS_JSON)."""
-    print("Autoryzacja do Google Sheets (ENV: G_SHEETS_JSON)...")
+    print("Autoryzacja do Google Sheets...")
     try:
-        creds_json = os.environ.get("G_SHEETS_JSON")
-        if not creds_json:
-            raise Exception("Brak zmiennej środowiskowej G_SHEETS_JSON (dodaj secret w GitHub).")
-
+        creds_json = os.environ.get('G_SHEETS_JSON')
         creds_dict = json.loads(creds_json)
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
-        arkusz = client.open_by_key(ARKUSZ_ID)
-
-        try:
-            zakladka = arkusz.worksheet(NAZWA_ZAKLADKI)
-        except gspread.WorksheetNotFound:
-            print(f"Tworzę nową zakładkę: {NAZWA_ZAKLADKI}")
-            zakladka = arkusz.add_worksheet(title=NAZWA_ZAKLADKI, rows="100", cols="20")
-
-        print(f"Pomyślnie połączono z arkuszem: {arkusz.title}, zakładka: {zakladka.title}")
-
-        naglowki = [
-            'Data Scrapingu',
-            'URL Ogłoszenia',
-            'Tytuł Ogłoszenia',
-            'Adres',
-            'Koszt Najmu',
-            'Czynsz (dodatkowo)',
-            'Liczba pokoi',
-            'Powierzchnia',
-            'Piętro',
-            'Typ Oferenta',
-            'Wystawca (Nazwa)',
-            'Telefon Kontaktowy',
-            'Opis'
-        ]
-
-        if zakladka.row_values(1) != naglowki:
-            if not zakladka.row_values(1):
-                zakladka.append_row(naglowki)
-            else:
-                print("Nagłówki już istnieją lub pierwsza linia nie jest pusta. Pomijam dodawanie nagłówków.")
-
-        return zakladka
-
+        return client.open_by_key(ARKUSZ_ID).worksheet(NAZWA_ZAKLADKI)
     except Exception as e:
-        print(f"BŁĄD autoryzacji Google Sheets: {e}")
+        print(f"BŁĄD autoryzacji: {e}")
         return None
-
 
 def setup_selenium_driver():
-    """Chrome headless pod GitHub Actions."""
-    print("Uruchamianie Chrome (headless, GitHub Actions)...")
-    try:
-        service = ChromeService(ChromeDriverManager().install())
-        options = webdriver.ChromeOptions()
-
-        options.add_argument('--headless=new')
-        options.add_argument('--no-sandbox')
-        options.add_argument('--disable-dev-shm-usage')
-        options.add_argument('--window-size=1920,1080')
-        options.add_argument('--disable-blink-features=AutomationControlled')
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        options.add_experimental_option('useAutomationExtension', False)
-        options.add_argument('--incognito')
-        options.add_argument(
-            'user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
-        )
-
-        driver = webdriver.Chrome(service=service, options=options)
-        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-        print("Chrome uruchomiony.")
-        return driver
-    except Exception as e:
-        print(f"BŁĄD uruchomienia Chrome: {e}")
-        return None
-
-
-def handle_cookies(driver):
-    """Akceptacja cookies."""
-    print("Próba akceptacji ciasteczek...")
-    try:
-        WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))
-        ).click()
-        print("Cookies OK.")
-        time.sleep(1)
-    except TimeoutException:
-        print("Cookies nie pojawiły się / już zaakceptowane.")
-    except Exception as e:
-        print(f"Nie udało się zaakceptować cookies: {e}")
-
-
-def process_page(driver):
-    """Pobiera dane z aktualnej strony listingu."""
-    rows_to_append = []
-
-    try:
-        WebDriverWait(driver, 15).until(
-            EC.presence_of_element_located((By.XPATH, "//article[@data-sentry-component='AdvertCard' or @data-sentry-component='VipAdvertCard']"))
-        )
-    except TimeoutException:
-        print("BŁĄD: Nie znaleziono żadnych kart ogłoszeń po 15s.")
-        return rows_to_append
-
-    listing_cards = driver.find_elements(
-        By.XPATH,
-        "//article[@data-sentry-component='AdvertCard'] | //article[@data-sentry-component='VipAdvertCard']"
+    options = Options()
+    options.add_argument('--headless=new')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--window-size=1920,1080')
+    options.add_argument('--disable-blink-features=AutomationControlled')
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    options.add_experimental_option('useAutomationExtension', False)
+    options.add_argument(
+        'user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
     )
 
-    if not listing_cards:
-        print("OSTRZEŻENIE: Nie znaleziono żadnych kart ogłoszeń na bieżącej stronie.")
-        return rows_to_append
+    service = ChromeService(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=options)
+    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+    return driver
 
-    print(f"Znaleziono {len(listing_cards)} ogłoszeń do przetworzenia.")
+def _to_amount(pl_amount_text):
+    if not pl_amount_text:
+        return 0.0
+    t = pl_amount_text.replace('\xa0', ' ').strip()
+    t = t.replace(' ', '').replace(',', '.')
+    m = re.search(r'(\d+(?:\.\d+)?)', t)
+    return float(m.group(1)) if m else 0.0
 
-    for i, card in enumerate(listing_cards):
-        data_scrapingu = now_pl_str()
+def parse_rent_and_fees(card_text):
+    """
+    Fallback na regex z tekstu (gdy DOM nie da się złapać).
+    Zwraca: (koszt_najmu, czynsz)
+    """
+    if not card_text:
+        return 0, 0
 
-        link, tytul, adres = "Brak linku", "Brak tytułu", "Brak adresu"
-        cena_najmu_text, czynsz_oplaty_text = "Brak Danych", "Brak Danych"
-        liczba_pokoi_text, powierzchnia_text, pietro_text = "Brak Danych", "Brak Danych", "Brak Danych"
-        typ_oferenta, wystawca_nazwa = "Brak Danych", "Brak Danych"
-        telefon_kontaktowy = "Brak Danych (Poza Kartą)"
-        opis_ogloszenia = "Brak opisu (Poza Kartą)"
+    txt = card_text.replace('\xa0', ' ')
+    txt_low = txt.lower()
 
-        # 1) Link / tytuł / adres
+    matches = list(re.finditer(r'(\d[\d\s,\.]*)\s*zł', txt, flags=re.IGNORECASE))
+
+    rent_candidates = []
+    fee_candidates = []
+
+    for m in matches:
+        amount_str = m.group(1)
+        amount = _to_amount(amount_str)
+        if amount <= 0:
+            continue
+
+        start, end = m.start(), m.end()
+        ctx_start = max(0, start - 35)
+        ctx_end = min(len(txt), end + 35)
+        ctx = txt_low[ctx_start:ctx_end]
+
+        if ('kaucj' in ctx) or ('depozyt' in ctx):
+            continue
+
+        if ('czynsz' in ctx) or ('opłat' in ctx) or ('administr' in ctx) or ('eksploat' in ctx):
+            fee_candidates.append(amount)
+        else:
+            rent_candidates.append(amount)
+
+    koszt_najmu = max(rent_candidates) if rent_candidates else 0
+    czynsz = max(fee_candidates) if fee_candidates else 0
+
+    if czynsz == 0 and ('czynsz' in txt_low):
+        all_amounts = []
+        for m in matches:
+            amount = _to_amount(m.group(1))
+            if amount > 0:
+                start, end = m.start(), m.end()
+                ctx = txt_low[max(0, start - 35):min(len(txt), end + 35)]
+                if ('kaucj' in ctx) or ('depozyt' in ctx):
+                    continue
+                all_amounts.append(amount)
+        all_amounts = sorted(all_amounts, reverse=True)
+        if len(all_amounts) >= 2:
+            koszt_najmu = all_amounts[0]
+            czynsz = all_amounts[1]
+
+    return koszt_najmu, czynsz
+
+def extract_prices_from_card_dom(card):
+    """
+    POPRAWIONE POD TWÓJ HTML:
+    - koszt najmu: <span data-sentry-element="MainPrice">1550&nbsp;zł</span>
+    - czynsz:      "+ czynsz: 600 zł/miesiąc" (wyciągamy TYLKO kwotę po słowie czynsz)
+    Zwraca: (koszt_najmu, czynsz)
+    """
+    koszt_najmu = 0
+    czynsz = 0
+
+    # --- 1) KOSZT NAJMU (MainPrice) z DOM ---
+    # próbujemy po stabilnych atrybutach, nie po klasach css-xxxx
+    main_price_selectors = [
+        'span[data-sentry-element="MainPrice"]',
+        '[data-sentry-element="MainPrice"]',
+        'span[data-sentry-element="MainPrice"][class]',
+        # czasem komponent jest w środku, ale data-sentry-element zostaje
+    ]
+
+    for sel in main_price_selectors:
         try:
-            link_element = card.find_element(By.XPATH, ".//a[@data-cy='listing-item-link']")
-            link = link_element.get_attribute('href')
-
-            try:
-                tytul = card.find_element(By.XPATH, ".//p[@data-cy='listing-item-title']").text.strip()
-            except NoSuchElementException:
-                try:
-                    tytul = card.find_element(By.XPATH, ".//p[@data-sentry-element='Title']").text.strip()
-                except NoSuchElementException:
-                    pass
-
-            try:
-                adres = card.find_element(By.XPATH, ".//p[contains(@class, 'e1cuc5p50')]").text.strip()
-            except NoSuchElementException:
-                try:
-                    adres = card.find_element(By.XPATH, ".//div[@data-sentry-element='AddressWrapper']//p").text.strip()
-                except NoSuchElementException:
-                    pass
-        except NoSuchElementException:
-            pass
-
-        # 2) Cena / czynsz
-        try:
-            cena_el = card.find_element(By.XPATH, ".//span[@data-sentry-element='MainPrice']")
-            cena_najmu_text = cena_el.text.strip()
-
-            try:
-                czynsz_el = card.find_element(By.XPATH, ".//span[contains(@class, 'eanmlll2')]")
-                tmp = (czynsz_el.text or "").strip()
-                # wpisuj tylko jeśli faktycznie zawiera "czynsz"
-                czynsz_oplaty_text = tmp.replace('+ czynsz:', '').strip() if "czynsz" in tmp.lower() else "Brak Danych"
-            except NoSuchElementException:
-                czynsz_oplaty_text = "Brak Danych"
-        except NoSuchElementException:
-            pass
-
-        # 3) Parametry
-        try:
-            specs = card.find_elements(By.XPATH, ".//dl/dt | .//dl/dd/span")
-            for j in range(0, len(specs), 2):
-                if j + 1 < len(specs):
-                    key = specs[j].text.strip()
-                    value = specs[j + 1].text.strip()
-
-                    if 'Liczba pokoi' in key:
-                        liczba_pokoi_text = value
-                    elif 'Cena za metr kwadratowy' in key or 'Powierzchnia' in key:
-                        powierzchnia_text = value
-                    elif 'Piętro' in key:
-                        pietro_text = value
-        except NoSuchElementException:
-            pass
-
-        # 4) Typ oferenta
-        try:
-            typ_el = card.find_element(By.XPATH, ".//span[contains(@class, 'e11ruw5v4')]")
-            typ_oferenta = typ_el.text.strip()
-
-            if 'Prywatna' not in typ_oferenta:
-                try:
-                    wyst_el = card.find_element(By.XPATH, ".//span[contains(@class, 'css-g6wttb')]")
-                    wystawca_nazwa = wyst_el.text.strip()
-                except NoSuchElementException:
+            els = card.find_elements(By.CSS_SELECTOR, sel)
+            for el in els:
+                # text bywa pusty; textContent zwykle działa
+                t = (el.text or "").strip()
+                if not t:
                     try:
-                        wystawca_nazwa = card.find_element(By.XPATH, ".//span[@data-sentry-element='OwnerName']").text.strip()
-                    except NoSuchElementException:
-                        wystawca_nazwa = typ_oferenta
-            else:
-                wystawca_nazwa = typ_oferenta
-        except Exception:
+                        t = (el.get_attribute("textContent") or "").strip()
+                    except:
+                        t = ""
+                if t and 'zł' in t.lower():
+                    val = _to_amount(t)
+                    if val > koszt_najmu:
+                        koszt_najmu = val
+        except:
             pass
 
-        # konwersje na liczby
-        cena_najmu = clean_and_convert_to_number(extract_numbers(cena_najmu_text))
-        czynsz_oplaty = clean_and_convert_to_number(extract_numbers(czynsz_oplaty_text))
-        liczba_pokoi = clean_and_convert_to_number(extract_numbers(liczba_pokoi_text))
-        powierzchnia = clean_and_convert_to_number(extract_numbers(powierzchnia_text))
-        pietro = clean_and_convert_to_number(extract_numbers(pietro_text))
+    # --- 2) innerHTML fallback (gdy Selenium .text nie łapie) ---
+    inner_html = ""
+    try:
+        inner_html = card.get_attribute("innerHTML") or ""
+    except:
+        inner_html = ""
 
-        print(f"[{i + 1}/{len(listing_cards)}] {tytul} | Najem: {cena_najmu} | Pow: {powierzchnia}")
+    if inner_html:
+        # normalizacja &nbsp; żeby regex złapał liczbę
+        ih = inner_html.replace("&nbsp;", " ").replace("\xa0", " ")
 
-        rows_to_append.append([
-            data_scrapingu,
-            link,
-            tytul,
-            adres,
-            cena_najmu,
-            czynsz_oplaty,
-            liczba_pokoi,
-            powierzchnia,
-            pietro,
-            typ_oferenta,
-            wystawca_nazwa,
-            telefon_kontaktowy,
-            opis_ogloszenia
-        ])
+        if koszt_najmu == 0:
+            # <span data-sentry-element="MainPrice" ...>1550 zł</span>
+            m = re.search(
+                r'data-sentry-element="MainPrice"[^>]*>\s*([\d\s,\.]+)\s*zł',
+                ih,
+                flags=re.IGNORECASE
+            )
+            if m:
+                koszt_najmu = _to_amount(m.group(1))
 
-        if (i + 1) % 10 == 0:
-            time.sleep(1)
+        # --- 3) CZYNSZ: tylko kwota po słowie czynsz (nie łapie 1550) ---
+        m_fee = re.search(r'czynsz[^0-9]*([\d\s,\.]+)\s*zł', ih, flags=re.IGNORECASE)
+        if m_fee:
+            czynsz = _to_amount(m_fee.group(1))
+
+    # --- 4) Asekuracja dla czynszu z innerText, gdyby HTML był okrojony ---
+    if czynsz == 0:
+        try:
+            inner_text = (card.get_attribute("innerText") or "").replace('\xa0', ' ')
+            m_fee2 = re.search(r'czynsz[^0-9]*([\d\s,\.]+)\s*zł', inner_text, flags=re.IGNORECASE)
+            if m_fee2:
+                czynsz = _to_amount(m_fee2.group(1))
+        except:
+            pass
+
+    return koszt_najmu, czynsz
+
+def process_page(driver):
+    rows_to_append = []
+    print("Przeszukuję stronę w poszukiwaniu ofert...")
+
+    for i in range(3):
+        driver.execute_script(f"window.scrollTo(0, {(i + 1) * 800});")
+        time.sleep(2)
+
+    listing_cards = driver.find_elements(By.CSS_SELECTOR, 'article[data-cy="listing-item"]')
+    if not listing_cards:
+        listing_cards = driver.find_elements(By.CSS_SELECTOR, 'div[data-cy="search.listing.organic"] article')
+    if not listing_cards:
+        listing_cards = driver.find_elements(By.TAG_NAME, 'article')
+
+    print(f"Wykryto {len(listing_cards)} potencjalnych ogłoszeń.")
+
+    for card in listing_cards:
+        try:
+            link_el = card.find_element(By.TAG_NAME, 'a')
+            link = link_el.get_attribute('href')
+            if not link or 'pl/oferta/' not in link:
+                continue
+
+            data_now = datetime.now(WARSAW_TZ).strftime("%Y-%m-%d %H:%M:%S")
+            card_text = card.text
+            lines = [line.strip() for line in card_text.split('\n') if line.strip()]
+
+            # --- TYTUŁ ---
+            tytul = "Brak tytułu"
+            for line in lines:
+                if '/' in line and len(line) < 10:
+                    continue
+                if 'zł' in line.lower():
+                    continue
+                if 'tomaszów' in line.lower() and len(line) < 25:
+                    continue
+                tytul = line
+                break
+
+            # --- ADRES ---
+            adres = "Tomaszów Mazowiecki"
+            for line in lines:
+                if 'tomaszów' in line.lower() or 'mazowiecki' in line.lower():
+                    if 'zł' not in line.lower():
+                        adres = line
+                        break
+
+            # --- CENY: KOSZT NAJMU (E) + CZYNSZ (F) ---
+            cena_najmu_dom, czynsz_dom = extract_prices_from_card_dom(card)
+            cena_najmu_txt, czynsz_txt = parse_rent_and_fees(card_text)
+
+            # preferuj DOM; jeśli DOM nie dał ceny, weź fallback z tekstu
+            cena_najmu = cena_najmu_dom if cena_najmu_dom > 0 else cena_najmu_txt
+            czynsz = czynsz_dom if czynsz_dom > 0 else czynsz_txt
+
+            # --- PARAMETRY (Pokoje, m2, Piętro) ---
+            pokoje, metraz, pietro = "0", "0", "0"
+            for line in lines:
+                l_low = line.lower()
+                if 'poko' in l_low:
+                    pokoje = extract_numbers(line)
+                if 'm²' in l_low or 'm2' in l_low:
+                    metraz = extract_numbers(line)
+                if 'piętr' in l_low:
+                    pietro = extract_numbers(line)
+
+            # --- OFERENT ---
+            typ = "Oferta prywatna"
+            wystawca = "Osoba prywatna"
+            if "biuro" in card_text.lower() or "agency" in card_text.lower():
+                typ = "Biuro nieruchomości"
+                wystawca = lines[-1] if len(lines) > 0 else "Biuro"
+
+            # E = cena_najmu, F = czynsz (TAKO MA BYĆ)
+            rows_to_append.append([
+                data_now, link, tytul, adres,
+                cena_najmu, czynsz,
+                pokoje, metraz, pietro, typ, wystawca,
+                "Brak Danych (Poza Kartą)", "Brak opisu (Poza Kartą)"
+            ])
+        except:
+            continue
 
     return rows_to_append
 
-
-def get_next_page_url(driver):
-    """
-    Otodom paginacja zwykle ma link:
-    <a title="Go to next Page" ... href="/pl/...?...page=2">
-    """
-    try:
-        next_link = WebDriverWait(driver, 6).until(
-            EC.presence_of_element_located((By.XPATH, "//a[@title='Go to next Page' or @aria-label='Go to next Page']"))
-        )
-        href = next_link.get_attribute("href")
-        if not href:
-            return None
-        if href.startswith("/"):
-            href = BASE_URL + href
-        return href
-    except TimeoutException:
-        return None
-    except Exception:
-        return None
-
-
-def main_scraper():
-    """Jedno uruchomienie: przeleć max MAX_STRON stron i zapisz wszystko hurtowo."""
+def main():
     zakladka = authorize_google_sheets()
-    if not zakladka:
-        return
-
     driver = setup_selenium_driver()
-    if not driver:
+    if not zakladka or not driver:
         return
-
-    all_rows_to_append = []
-    current_page = 1
 
     try:
         print(f"Otwieram: {URL_OTODOM}")
         driver.get(URL_OTODOM)
-        time.sleep(8)
-        handle_cookies(driver)
+        time.sleep(12)
 
-        while True:
-            print(f"\n--- PRZETWARZANIE STRONY {current_page}/{MAX_STRON} ---")
+        try:
+            WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))
+            ).click()
+            print("Cookies OK.")
+        except:
+            pass
 
-            try:
-                rows_from_page = process_page(driver)
-                all_rows_to_append.extend(rows_from_page)
-            except Exception as e:
-                print(f"BŁĄD przetwarzania strony {current_page}: {e}")
-
-            if current_page >= MAX_STRON:
-                print(f"Osiągnięto limit stron: {MAX_STRON}. Kończę paginację.")
-                break
-
-            next_url = get_next_page_url(driver)
-            if not next_url:
-                print("Nie znaleziono linku 'Go to next Page' -> koniec paginacji.")
-                break
-
-            current_page += 1
-            print(f"Przechodzę na: {next_url}")
-            driver.get(next_url)
-            time.sleep(7)
-
-        if all_rows_to_append:
-            print(f"\nZapisuję {len(all_rows_to_append)} wierszy do Arkusza Google...")
-            zakladka.append_rows(all_rows_to_append)
-            print("Pomyślnie zapisano wszystkie ogłoszenia.")
+        data = process_page(driver)
+        if data:
+            print(f"Zapisuję {len(data)} ofert do Google Sheets...")
+            zakladka.append_rows(data)
+            print("ZAPIS ZAKOŃCZONY SUKCESEM!")
         else:
-            print("Nie było nic do zapisania.")
-
-    except Exception as e:
-        print(f"Wystąpił nieoczekiwany błąd w trakcie działania skanera: {e}")
+            print(f"Nie znaleziono ofert. Tytuł strony: {driver.title}")
 
     finally:
         if driver:
             driver.quit()
-            print("--- PRZEGLĄDARKA ZAMKNIĘTA ---")
 
-
-# --- START (GitHub Actions: uruchom raz i zakończ) ---
 if __name__ == "__main__":
-    print("\n" + "=" * 50)
-    print("--- START SCRAPOWANIA OTODOM (GITHUB ACTIONS) ---")
-    print(f"Start o (PL): {now_pl_str()}")
-    print(f"MAX_STRON: {MAX_STRON}")
-    print("=" * 50)
-    main_scraper()
+    main()
+
