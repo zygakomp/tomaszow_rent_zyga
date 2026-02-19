@@ -236,28 +236,17 @@ def extract_prices_from_card_dom(card):
     return koszt_najmu, cena_za_m2, czynsz
 
 def infer_city_from_url(url):
-    """
-    Próbuje wyciągnąć 'miasto' z końcówki URL Otodom.
-    Przykład:
-      .../pabianice?by=... -> "Pabianice"
-      .../lodz?by=...      -> "Lodz" (bez polskich znaków, bo slug)
-    """
     if not url:
         return "Brak adresu"
     u = url.split('?', 1)[0].rstrip('/')
     last = u.split('/')[-1].strip()
     if not last:
         return "Brak adresu"
-
-    # usuń ewentualne śmieci typu "gmina-miejska--pabianice" (gdyby to było ostatnie)
     last = last.replace('--', '-')
-
-    # slug -> tytułowo
     last = last.replace('-', ' ').strip()
     if not last:
         return "Brak adresu"
 
-    # Title case, ale zostaw małe "i", "w", "z" jeśli kiedyś się pojawi
     words = last.split()
     small = {"i", "w", "z", "na", "od", "do", "pod", "nad", "za", "we", "ze"}
     out = []
@@ -270,63 +259,94 @@ def infer_city_from_url(url):
     return " ".join(out)
 
 def extract_address_from_lines(lines, fallback_city):
-    """
-    Wyciąga adres/lokalizację z tekstu karty.
-    Heurystyka:
-    - pomija linie z cenami, metrażem, piętrem, pokojami, 'zł', 'm²', itp.
-    - preferuje linie krótkie bez cyfr (typowo: "Pabianice, Centrum" / "Pabianice")
-    """
     if not lines:
         return fallback_city or "Brak adresu"
 
     bad_keywords = [
         'zł', 'pln', 'm²', 'm2', 'poko', 'piętr', 'kaucj', 'czynsz',
         'biuro', 'agency', 'oferta', 'wynajem', 'sprzeda', 'miesiąc',
-        'ul.', 'al.', 'os.', 'osied', 'lokal', 'apartament', 'kawaler',
     ]
 
     candidates = []
-
     for line in lines:
         t = (line or "").strip()
         if not t:
             continue
-
         tl = t.lower().replace('\xa0', ' ')
-
-        # odfiltruj ewidentne parametry/ceny/liczby
         if any(k in tl for k in bad_keywords):
             continue
-        if re.search(r'\d', tl):  # cyfry -> zwykle parametry / ulica z numerem
+        if len(t) < 3 or len(t) > 90:
             continue
-        if len(t) < 3 or len(t) > 60:
-            continue
-
-        # typowe lokalizacje mają przecinek (miasto, dzielnica)
         score = 0
         if ',' in t:
             score += 2
         if fallback_city and fallback_city.lower() in tl:
             score += 3
-
-        # zaczyna się z dużej litery
         if re.match(r'^[A-ZĄĆĘŁŃÓŚŹŻ]', t):
             score += 1
-
         candidates.append((score, t))
 
     if candidates:
         candidates.sort(key=lambda x: x[0], reverse=True)
-        best = candidates[0][1].strip()
-        return best
+        return candidates[0][1].strip()
 
     return fallback_city or "Brak adresu"
+
+def extract_address_from_card_dom(card):
+    """
+    Adres z DOM:
+      <p data-sentry-component="Address" ...>ul. ..., Pabianice, ...</p>
+
+    Zwraca pełny string adresu lub "" jeśli nie znaleziono.
+    """
+    selectors = [
+        '[data-sentry-component="Address"]',
+        'p[data-sentry-component="Address"]',
+        '[data-sentry-element="StyledParagraph"][data-sentry-component="Address"]',
+    ]
+
+    best = ""
+    for sel in selectors:
+        try:
+            els = card.find_elements(By.CSS_SELECTOR, sel)
+            for el in els:
+                t = (el.text or "").strip()
+                if not t:
+                    try:
+                        t = (el.get_attribute("textContent") or "").strip()
+                    except:
+                        t = ""
+                t = (t or "").replace('\xa0', ' ').strip()
+                # bardzo prosta walidacja: adres zwykle ma przecinki i nie ma "zł"
+                if t and ('zł' not in t.lower()):
+                    if len(t) > len(best):
+                        best = t
+        except:
+            pass
+
+    # fallback: spróbuj z innerHTML (gdyby text był pusty)
+    if not best:
+        try:
+            ih = card.get_attribute("innerHTML") or ""
+            ih = ih.replace("&nbsp;", " ").replace("\xa0", " ")
+            m = re.search(
+                r'data-sentry-component="Address"[^>]*>\s*([^<]{3,200})\s*<',
+                ih,
+                flags=re.IGNORECASE
+            )
+            if m:
+                cand = m.group(1).strip()
+                if cand and ('zł' not in cand.lower()):
+                    best = cand
+        except:
+            pass
+
+    return best
 
 def process_page(driver):
     rows_to_append = []
     print("Przeszukuję stronę w poszukiwaniu ofert...")
 
-    # domyślne miasto (fallback) bierzemy z URL strony wyników
     fallback_city = infer_city_from_url(URL_OTODOM)
 
     for i in range(3):
@@ -368,20 +388,19 @@ def process_page(driver):
                 tytul = line
                 break
 
-            # --- ADRES (NAPRAWIONE: nie ustawiamy Tomaszowa na sztywno) ---
-            # 1) spróbuj wyciągnąć sensowną lokalizację z linii karty
-            # 2) fallback -> miasto z URL
-            adres = extract_address_from_lines(lines, fallback_city)
+            # --- ADRES: najpierw DOM (data-sentry-component="Address"), fallback na linie/miasto ---
+            adres_dom = extract_address_from_card_dom(card)
+            if adres_dom:
+                adres = adres_dom
+            else:
+                adres = extract_address_from_lines(lines, fallback_city)
 
             # --- CENY: E = cena_najmu, F = cena_za_m2 ---
             cena_najmu_dom, cena_m2_dom, czynsz_dom = extract_prices_from_card_dom(card)
             cena_najmu_txt, czynsz_txt = parse_rent_and_fees(card_text)
 
-            # preferuj DOM; fallback do tekstu
             cena_najmu = cena_najmu_dom if cena_najmu_dom > 0 else cena_najmu_txt
             czynsz = czynsz_dom if czynsz_dom > 0 else czynsz_txt
-
-            # cena za m2: jak DOM nie dał, policz z cena_najmu/metraz (tylko gdy metraż > 0)
             cena_za_m2 = cena_m2_dom
 
             # --- PARAMETRY (Pokoje, m2, Piętro) ---
@@ -395,7 +414,6 @@ def process_page(driver):
                 if 'piętr' in l_low:
                     pietro = extract_numbers(line)
 
-            # jeśli dalej brak cena/m2, a mamy metraż i cenę najmu -> wylicz
             if (cena_za_m2 == 0 or cena_za_m2 is None) and metraz:
                 try:
                     mval = float(str(metraz).replace(',', '.'))
@@ -412,7 +430,7 @@ def process_page(driver):
                 wystawca = lines[-1] if len(lines) > 0 else "Biuro"
 
             rows_to_append.append([
-                data_now, link, tytul, adres,
+                data_now, link, tytul, adres,      # <-- KOLUMNA D = ADRES Z DOM
                 cena_najmu, cena_za_m2,
                 pokoje, metraz, pietro, typ, wystawca,
                 "Brak Danych (Poza Kartą)", "Brak opisu (Poza Kartą)",
