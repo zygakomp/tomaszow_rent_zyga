@@ -24,9 +24,17 @@ WARSAW_TZ = ZoneInfo("Europe/Warsaw")
 # LIMIT STRON (domyślnie 5) – ustaw w GitHub Actions env MAX_PAGES
 MAX_PAGES = int(os.environ.get("MAX_PAGES", "5"))
 
+BRAK = "brak danych"
+
 
 def now_pl_str():
     return datetime.now(WARSAW_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def safe_strip(x):
+    if not isinstance(x, str):
+        return x
+    return x.strip()
 
 
 # --- UNIWERSALNA FUNKCJA DO CZYSZCZENIA I KONWERSJI NA LICZBY ---
@@ -36,17 +44,35 @@ def clean_and_convert_to_number(text_value, is_float=False):
     a następnie konwertuje na int lub float.
     Jeśli konwersja się nie powiedzie, zwraca oryginalny tekst.
     """
-    if not isinstance(text_value, str) or text_value.strip() == "Brak Danych":
+    if not isinstance(text_value, str):
         return text_value
 
-    cleaned_value = text_value.strip().replace('\xa0', ' ')
+    tv = text_value.strip()
+    if not tv or tv.lower() in ["brak danych", "brak", "—", "-"]:
+        return BRAK
 
-    cleaned_value = cleaned_value.replace('zł', '').replace('.', '').replace(',', '.').replace(' ', '').strip()
+    cleaned_value = tv.replace('\xa0', ' ')
 
+    # usuń waluty i separatory
     cleaned_value = (
         cleaned_value
-        .replace('m²', '').replace('m2', '')
-        .replace('pokoje', '').replace('pokój', '')
+        .replace('zł', '')
+        .replace('PLN', '')
+        .replace('pln', '')
+        .replace('.', '')
+        .replace(',', '.')
+        .replace(' ', '')
+        .strip()
+    )
+
+    # usuń jednostki/teksty
+    cleaned_value = (
+        cleaned_value
+        .replace('m²', '')
+        .replace('m2', '')
+        .replace('pokoje', '')
+        .replace('pokój', '')
+        .replace('pietro', '')
         .replace('piętro', '')
         .strip()
     )
@@ -63,6 +89,20 @@ def clean_and_convert_to_number(text_value, is_float=False):
             return int(float(cleaned_value))
     except ValueError:
         return text_value
+
+
+def compute_price_per_m2(koszt_najmu_kwota, powierzchnia_liczba):
+    """
+    G = kwota za m2 = F / I (koszt najmu / powierzchnia)
+    Zwraca float (zaokrąglony do 2) albo 'brak danych'
+    """
+    try:
+        if isinstance(koszt_najmu_kwota, (int, float)) and isinstance(powierzchnia_liczba, (int, float)):
+            if powierzchnia_liczba and powierzchnia_liczba > 0:
+                return round(float(koszt_najmu_kwota) / float(powierzchnia_liczba), 2)
+    except Exception:
+        pass
+    return BRAK
 
 
 # --- GOOGLE SHEETS (GITHUB: ENV G_SHEETS_JSON) ---
@@ -86,31 +126,35 @@ def authorize_google_sheets():
             zakladka = arkusz.worksheet(NAZWA_ZAKLADKI)
         except gspread.WorksheetNotFound:
             print(f"Tworzę nową zakładkę: {NAZWA_ZAKLADKI}")
-            zakladka = arkusz.add_worksheet(title=NAZWA_ZAKLADKI, rows="300", cols="25")
+            zakladka = arkusz.add_worksheet(title=NAZWA_ZAKLADKI, rows="300", cols="30")
 
         print(f"Pomyślnie połączono z arkuszem: {arkusz.title}, zakładka: {zakladka.title}")
 
+        # UWAGA: zgodnie z Twoim wymaganiem:
+        # F=koszt najmu, G=kwota za m2, H=czynsz dodatkowo, I=powierzchnia, ...
         naglowki = [
-            'Data Scrapingu',
-            'URL Ogłoszenia',
-            'Typ Oferenta',
-            'Wystawca (Nazwa)',
-            'Telefon Kontaktowy',
-            'Koszt Najmu',
-            'Czynsz (dodatkowo)',
-            'Powierzchnia',
-            'Liczba pokoi',
-            'Parking',
-            'Zwierzęta',
-            'Winda',
-            'Poziom',
-            'Umeblowane',
-            'Rodzaj zabudowy',
-            'Opis'
+            'Data Scrapingu',          # A
+            'URL Ogłoszenia',          # B
+            'Typ Oferenta',            # C
+            'Wystawca (Nazwa)',        # D
+            'Telefon Kontaktowy',      # E
+            'Koszt Najmu',             # F
+            'Kwota za m²',             # G  (F/I)
+            'Czynsz (dodatkowo)',      # H
+            'Powierzchnia',            # I
+            'Liczba pokoi',            # J
+            'Parking',                 # K
+            'Zwierzęta',               # L
+            'Winda',                   # M
+            'Poziom',                  # N
+            'Umeblowane',              # O
+            'Rodzaj zabudowy',         # P
+            'Opis'                     # Q
         ]
 
-        if zakladka.row_values(1) != naglowki:
-            if not zakladka.row_values(1):
+        existing_first_row = zakladka.row_values(1)
+        if existing_first_row != naglowki:
+            if not existing_first_row:
                 zakladka.append_row(naglowki)
             else:
                 print("Nagłówki już istnieją lub 1. wiersz nie jest pusty — pomijam ustawianie nagłówków.")
@@ -207,20 +251,20 @@ def get_listing_details(driver, url):
 
     data_scrapingu = now_pl_str()
 
-    cena_najmu = "Brak Danych"
-    opis_ogloszenia = "Brak opisu"
-    typ_oferenta = "Brak Danych"
-    wystawca_nazwa = "Brak Danych"
-    telefon_kontaktowy = "Brak Danych"
-    czynsz_oplaty = "Brak Danych"
-    powierzchnia = "Brak Danych"
-    liczba_pokoi = "Brak Danych"
-    parking = "Brak Danych"
-    zwierzeta = "Brak Danych"
-    winda = "Brak Danych"
-    poziom = "Brak Danych"
-    umeblowane = "Brak Danych"
-    rodzaj_zabudowy = "Brak Danych"
+    cena_najmu = BRAK
+    opis_ogloszenia = BRAK
+    typ_oferenta = BRAK
+    wystawca_nazwa = BRAK
+    telefon_kontaktowy = BRAK
+    czynsz_oplaty = BRAK
+    powierzchnia = BRAK
+    liczba_pokoi = BRAK
+    parking = BRAK
+    zwierzeta = BRAK
+    winda = BRAK
+    poziom = BRAK
+    umeblowane = BRAK
+    rodzaj_zabudowy = BRAK
 
     wait = WebDriverWait(driver, 10)
 
@@ -229,20 +273,22 @@ def get_listing_details(driver, url):
         cena_element = wait.until(
             EC.presence_of_element_located((By.XPATH, "//div[@data-testid='ad-price-container']/h3"))
         )
-        cena_najmu = cena_element.text.strip()
+        cena_najmu = safe_strip(cena_element.text) or BRAK
     except TimeoutException:
         pass
 
     # 2) WYSTAWCA
     try:
         wystawca_element = driver.find_element(By.XPATH, "//h4[@data-testid='user-profile-user-name']")
-        wystawca_nazwa = wystawca_element.text.strip()
+        wystawca_nazwa = safe_strip(wystawca_element.text) or BRAK
     except NoSuchElementException:
         pass
 
     # 3) TELEFON (klik "Pokaż")
     try:
-        show_phone_button = wait.until(EC.presence_of_element_located((By.XPATH, "//button[@data-testid='show-phone']")))
+        show_phone_button = wait.until(
+            EC.presence_of_element_located((By.XPATH, "//button[@data-testid='show-phone']"))
+        )
         if show_phone_button.is_displayed() and show_phone_button.is_enabled():
             try:
                 show_phone_button.click()
@@ -250,13 +296,15 @@ def get_listing_details(driver, url):
             except ElementClickInterceptedException:
                 pass
 
+            # próba 1: element numeru
             try:
                 numer_element = driver.find_element(
                     By.XPATH,
                     "//div[@data-testid='ad-contact-bar']//p[contains(@class,'css-')]"
                 )
-                telefon_kontaktowy = numer_element.text.strip()
+                telefon_kontaktowy = safe_strip(numer_element.text) or BRAK
             except NoSuchElementException:
+                # próba 2: cały kontener
                 try:
                     phone_container = driver.find_element(By.XPATH, "//div[@data-testid='ad-contact-bar']")
                     telefon_kontaktowy = (
@@ -265,17 +313,18 @@ def get_listing_details(driver, url):
                         .replace("Pokaż", "")
                         .replace("Wyślij wiadomość", "")
                         .strip()
-                    )
+                    ) or BRAK
                 except NoSuchElementException:
                     pass
 
     except TimeoutException:
+        # fallback: czasem numer jest bez przycisku
         try:
             numer_element = driver.find_element(
                 By.XPATH,
                 "//div[@data-testid='ad-contact-bar']//p[contains(@class,'css-')]"
             )
-            telefon_kontaktowy = numer_element.text.strip()
+            telefon_kontaktowy = safe_strip(numer_element.text) or BRAK
         except NoSuchElementException:
             pass
     except Exception:
@@ -285,35 +334,38 @@ def get_listing_details(driver, url):
     try:
         param_container = driver.find_element(By.XPATH, "//div[@data-testid='ad-parameters-container']")
 
-        # typ oferenta
+        # typ oferenta (pierwszy <span> w parametrach)
         try:
             typ_element = param_container.find_element(By.TAG_NAME, "span")
-            typ_oferenta = typ_element.text.strip()
+            typ_oferenta = safe_strip(typ_element.text) or BRAK
         except NoSuchElementException:
             pass
 
+        # wszystkie wiersze <p>
         param_elements = param_container.find_elements(By.TAG_NAME, "p")
         for p in param_elements:
-            text = p.text.strip()
+            text = safe_strip(p.text) or ""
+            if not text:
+                continue
 
             if text.startswith("Czynsz (dodatkowo):"):
-                czynsz_oplaty = text.replace("Czynsz (dodatkowo):", "").strip()
+                czynsz_oplaty = text.replace("Czynsz (dodatkowo):", "").strip() or BRAK
             elif text.startswith("Powierzchnia:"):
-                powierzchnia = text.replace("Powierzchnia:", "").strip()
+                powierzchnia = text.replace("Powierzchnia:", "").strip() or BRAK
             elif text.startswith("Liczba pokoi:"):
-                liczba_pokoi = text.replace("Liczba pokoi:", "").strip()
+                liczba_pokoi = text.replace("Liczba pokoi:", "").strip() or BRAK
             elif text.startswith("Parking:"):
-                parking = text.replace("Parking:", "").strip()
+                parking = text.replace("Parking:", "").strip() or BRAK
             elif text.startswith("Zwierzęta:"):
-                zwierzeta = text.replace("Zwierzęta:", "").strip()
+                zwierzeta = text.replace("Zwierzęta:", "").strip() or BRAK
             elif text.startswith("Winda:"):
-                winda = text.replace("Winda:", "").strip()
+                winda = text.replace("Winda:", "").strip() or BRAK
             elif text.startswith("Poziom:"):
-                poziom = text.replace("Poziom:", "").strip()
+                poziom = text.replace("Poziom:", "").strip() or BRAK
             elif text.startswith("Umeblowane:"):
-                umeblowane = text.replace("Umeblowane:", "").strip()
+                umeblowane = text.replace("Umeblowane:", "").strip() or BRAK
             elif text.startswith("Rodzaj zabudowy:"):
-                rodzaj_zabudowy = text.replace("Rodzaj zabudowy:", "").strip()
+                rodzaj_zabudowy = text.replace("Rodzaj zabudowy:", "").strip() or BRAK
 
     except NoSuchElementException:
         pass
@@ -324,40 +376,50 @@ def get_listing_details(driver, url):
             By.XPATH,
             "//div[@data-cy='ad_description']//div[contains(@class, 'css-')]"
         )
-        opis_ogloszenia = opis_element.text.strip().replace('\n', ' ')
+        opis_ogloszenia = opis_element.text.strip().replace('\n', ' ') or BRAK
     except NoSuchElementException:
         pass
 
-    # --- KONWERSJE LICZB ---
-    koszt_najmu_kwota = clean_and_convert_to_number(cena_najmu, is_float=False)
-    czynsz_oplaty_kwota = clean_and_convert_to_number(czynsz_oplaty, is_float=False)
-    powierzchnia_liczba = clean_and_convert_to_number(powierzchnia, is_float=True)
-    liczba_pokoi_liczba = clean_and_convert_to_number(liczba_pokoi, is_float=False)
-    poziom_liczba = clean_and_convert_to_number(poziom, is_float=False)
+    # --- KONWERSJE LICZB (F, H, I, J, N) ---
+    koszt_najmu_kwota = clean_and_convert_to_number(cena_najmu, is_float=False)       # F
+    czynsz_oplaty_kwota = clean_and_convert_to_number(czynsz_oplaty, is_float=False) # H
+    powierzchnia_liczba = clean_and_convert_to_number(powierzchnia, is_float=True)   # I
+    liczba_pokoi_liczba = clean_and_convert_to_number(liczba_pokoi, is_float=False)  # J
+    poziom_liczba = clean_and_convert_to_number(poziom, is_float=False)              # N
 
+    # podstaw wartości liczbowe (albo 'brak danych')
     powierzchnia = powierzchnia_liczba
     liczba_pokoi = liczba_pokoi_liczba
     poziom = poziom_liczba
 
-    print(f"  -> Zeskanowano: Najem: {koszt_najmu_kwota}, Pow: {powierzchnia}, Pokoje: {liczba_pokoi}, Poziom: {poziom}")
+    # --- G: kwota za m2 (F/I) ---
+    kwota_za_m2 = compute_price_per_m2(koszt_najmu_kwota, powierzchnia_liczba)
 
+    print(
+        f"  -> Zeskanowano: Najem(F): {koszt_najmu_kwota}, m2(G): {kwota_za_m2}, "
+        f"Czynsz(H): {czynsz_oplaty_kwota}, Pow(I): {powierzchnia}, "
+        f"Pokoje(J): {liczba_pokoi}, Poziom(N): {poziom}"
+    )
+
+    # KOLEJNOŚĆ KOLUMN (A-Q) zgodnie z nagłówkami:
     return [
-        data_scrapingu,
-        url,
-        typ_oferenta,
-        wystawca_nazwa,
-        telefon_kontaktowy,
-        koszt_najmu_kwota,
-        czynsz_oplaty_kwota,
-        powierzchnia,
-        liczba_pokoi,
-        parking,
-        zwierzeta,
-        winda,
-        poziom,
-        umeblowane,
-        rodzaj_zabudowy,
-        opis_ogloszenia
+        data_scrapingu,          # A
+        url,                     # B
+        typ_oferenta,            # C
+        wystawca_nazwa,          # D
+        telefon_kontaktowy,      # E
+        koszt_najmu_kwota,       # F
+        kwota_za_m2,             # G
+        czynsz_oplaty_kwota,     # H
+        powierzchnia,            # I
+        liczba_pokoi,            # J
+        parking,                 # K
+        zwierzeta,               # L
+        winda,                   # M
+        poziom,                  # N
+        umeblowane,              # O
+        rodzaj_zabudowy,         # P
+        opis_ogloszenia          # Q
     ]
 
 
@@ -423,7 +485,7 @@ def main_scraper():
             print(f"[{i + 1}/{len(links_list)}] Przetwarzam: {link}")
 
             full_link = link
-            if link.startswith('/d/oferta/'):
+            if isinstance(link, str) and link.startswith('/d/oferta/'):
                 full_link = BASE_URL + link
 
             details = get_listing_details(driver, full_link)
