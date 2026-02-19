@@ -19,7 +19,7 @@ WARSAW_TZ = ZoneInfo("Europe/Warsaw")
 
 # --- KONFIGURACJA SKRYPTU ---
 ARKUSZ_ID = '1JdrNZr4eeX8Vc1w-V7XgB2ysdnxAQg_KqCE3b6RHCtc'
-NAZWA_ZAKLADKI = 'TOM_OTO_Sprzedaz'
+NAZWA_ZAKLADKI = 'otodom_tom_sell'
 URL_OTODOM = 'https://www.otodom.pl/pl/wyniki/sprzedaz/mieszkanie/lodzkie/tomaszowski/gmina-miejska--tomaszow-mazowiecki/tomaszow-mazowiecki'
 BASE_URL = 'https://www.otodom.pl'
 
