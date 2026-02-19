@@ -1,5 +1,7 @@
 import os
+import sys
 import json
+import argparse
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from selenium import webdriver
@@ -21,9 +23,6 @@ URL_OLX = 'https://www.olx.pl/nieruchomosci/biura-lokale/pabianice/'
 BASE_URL = "https://www.olx.pl"
 WARSAW_TZ = ZoneInfo("Europe/Warsaw")
 
-# LIMIT STRON (domyślnie 5) – ustaw w GitHub Actions env MAX_PAGES
-MAX_PAGES = int(os.environ.get("MAX_PAGES", "5"))
-
 BRAK = "brak danych"
 
 
@@ -37,7 +36,6 @@ def safe_strip(x):
     return x.strip()
 
 
-# --- UNIWERSALNA FUNKCJA DO CZYSZCZENIA I KONWERSJI NA LICZBY ---
 def clean_and_convert_to_number(text_value, is_float=False):
     """
     Czyści tekst z symboli waluty, jednostek (m², pokoje, piętra) i spacji,
@@ -93,7 +91,7 @@ def clean_and_convert_to_number(text_value, is_float=False):
 
 def compute_price_per_m2(koszt_najmu_kwota, powierzchnia_liczba):
     """
-    G = kwota za m2 = F / I (koszt najmu / powierzchnia)
+    G = kwota za m2 = F / H (koszt najmu / powierzchnia)
     Zwraca float (zaokrąglony do 2) albo 'brak danych'
     """
     try:
@@ -103,6 +101,44 @@ def compute_price_per_m2(koszt_najmu_kwota, powierzchnia_liczba):
     except Exception:
         pass
     return BRAK
+
+
+def parse_pages_cli_env_prompt(default_env="5"):
+    """
+    Priorytet:
+    1) CLI: --pages / --max-pages
+    2) ENV: MAX_PAGES
+    3) Prompt lokalny (tylko gdy stdin to TTY)
+    4) Fallback: 5
+    """
+    parser = argparse.ArgumentParser(description="OLX scraper (liczba stron konfigurowalna).")
+    parser.add_argument("--pages", "--max-pages", dest="max_pages", type=int, default=None,
+                        help="Ile stron OLX przeskanować (nadpisuje ENV MAX_PAGES).")
+    args, _ = parser.parse_known_args()
+
+    if args.max_pages is not None and args.max_pages > 0:
+        return int(args.max_pages)
+
+    env_val = os.environ.get("MAX_PAGES", default_env).strip()
+    try:
+        env_pages = int(env_val)
+        if env_pages > 0:
+            return env_pages
+    except Exception:
+        pass
+
+    # prompt tylko lokalnie
+    if sys.stdin is not None and sys.stdin.isatty():
+        try:
+            raw = input("Podaj ilość stron do przeskanowania (np. 5): ").strip()
+            if raw:
+                v = int(raw)
+                if v > 0:
+                    return v
+        except Exception:
+            pass
+
+    return 5
 
 
 # --- GOOGLE SHEETS (GITHUB: ENV G_SHEETS_JSON) ---
@@ -130,8 +166,8 @@ def authorize_google_sheets():
 
         print(f"Pomyślnie połączono z arkuszem: {arkusz.title}, zakładka: {zakladka.title}")
 
-        # UWAGA: zgodnie z Twoim wymaganiem:
-        # F=koszt najmu, G=kwota za m2, H=czynsz dodatkowo, I=powierzchnia, ...
+        # WYMAGANIE: F=koszt najmu, G=kwota za m2, H=powierzchnia
+        # Czynsz przeniesiony do I (żeby nadal był w arkuszu)
         naglowki = [
             'Data Scrapingu',          # A
             'URL Ogłoszenia',          # B
@@ -139,9 +175,9 @@ def authorize_google_sheets():
             'Wystawca (Nazwa)',        # D
             'Telefon Kontaktowy',      # E
             'Koszt Najmu',             # F
-            'Kwota za m²',             # G  (F/I)
-            'Czynsz (dodatkowo)',      # H
-            'Powierzchnia',            # I
+            'Kwota za m²',             # G  (F/H)
+            'Powierzchnia',            # H
+            'Czynsz (dodatkowo)',      # I
             'Liczba pokoi',            # J
             'Parking',                 # K
             'Zwierzęta',               # L
@@ -380,24 +416,23 @@ def get_listing_details(driver, url):
     except NoSuchElementException:
         pass
 
-    # --- KONWERSJE LICZB (F, H, I, J, N) ---
+    # --- KONWERSJE LICZB ---
     koszt_najmu_kwota = clean_and_convert_to_number(cena_najmu, is_float=False)       # F
-    czynsz_oplaty_kwota = clean_and_convert_to_number(czynsz_oplaty, is_float=False) # H
-    powierzchnia_liczba = clean_and_convert_to_number(powierzchnia, is_float=True)   # I
+    powierzchnia_liczba = clean_and_convert_to_number(powierzchnia, is_float=True)   # H
+    czynsz_oplaty_kwota = clean_and_convert_to_number(czynsz_oplaty, is_float=False) # I
     liczba_pokoi_liczba = clean_and_convert_to_number(liczba_pokoi, is_float=False)  # J
     poziom_liczba = clean_and_convert_to_number(poziom, is_float=False)              # N
 
-    # podstaw wartości liczbowe (albo 'brak danych')
     powierzchnia = powierzchnia_liczba
     liczba_pokoi = liczba_pokoi_liczba
     poziom = poziom_liczba
 
-    # --- G: kwota za m2 (F/I) ---
+    # --- G: kwota za m2 (F/H) ---
     kwota_za_m2 = compute_price_per_m2(koszt_najmu_kwota, powierzchnia_liczba)
 
     print(
         f"  -> Zeskanowano: Najem(F): {koszt_najmu_kwota}, m2(G): {kwota_za_m2}, "
-        f"Czynsz(H): {czynsz_oplaty_kwota}, Pow(I): {powierzchnia}, "
+        f"Pow(H): {powierzchnia}, Czynsz(I): {czynsz_oplaty_kwota}, "
         f"Pokoje(J): {liczba_pokoi}, Poziom(N): {poziom}"
     )
 
@@ -410,8 +445,8 @@ def get_listing_details(driver, url):
         telefon_kontaktowy,      # E
         koszt_najmu_kwota,       # F
         kwota_za_m2,             # G
-        czynsz_oplaty_kwota,     # H
-        powierzchnia,            # I
+        powierzchnia,            # H
+        czynsz_oplaty_kwota,     # I
         liczba_pokoi,            # J
         parking,                 # K
         zwierzeta,               # L
@@ -423,8 +458,8 @@ def get_listing_details(driver, url):
     ]
 
 
-def main_scraper():
-    """Jedno uruchomienie: zbierz linki z max MAX_PAGES stron, wejdź w ogłoszenia, zapisz hurtowo do GSheets."""
+def main_scraper(max_pages_user: int):
+    """Jedno uruchomienie: zbierz linki z max max_pages_user stron, wejdź w ogłoszenia, zapisz hurtowo do GSheets."""
     zakladka = authorize_google_sheets()
     if not zakladka:
         return
@@ -440,8 +475,8 @@ def main_scraper():
         handle_cookies(driver)
 
         detected_max = get_max_page_number(driver)
-        max_page = min(detected_max, MAX_PAGES)
-        print(f"Limit stron: MAX_PAGES={MAX_PAGES}. Wykryto={detected_max}. Przetworzę={max_page}.")
+        max_page = min(detected_max, max_pages_user)
+        print(f"Limit stron (Twoje): {max_pages_user}. Wykryto={detected_max}. Przetworzę={max_page}.")
 
         all_links = set()
 
@@ -512,11 +547,14 @@ def main_scraper():
             print("\n--- PRZEGLĄDARKA ZAMKNIĘTA, PRZETWARZANIE ZAKOŃCZONE ---")
 
 
-# --- START (GITHUB ACTIONS: URUCHOM RAZ I ZAKOŃCZ) ---
 if __name__ == "__main__":
+    max_pages = parse_pages_cli_env_prompt()
+
     print("\n" + "=" * 60)
-    print("--- START OLX SCRAPER (GITHUB ACTIONS) ---")
+    print("--- START OLX SCRAPER (GITHUB ACTIONS / LOCAL) ---")
     print(f"Start o (PL): {now_pl_str()}")
-    print(f"MAX_PAGES: {MAX_PAGES}")
+    print(f"MAX_PAGES (wybrane): {max_pages}")
+    print("Kolumny: F=Koszt Najmu, G=Kwota za m², H=Powierzchnia")
     print("=" * 60)
-    main_scraper()
+
+    main_scraper(max_pages)
