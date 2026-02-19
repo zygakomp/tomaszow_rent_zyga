@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 
 # 🏠 --- KONFIGURACJA SKRYPTU ---
 ARKUSZ_ID = '1JdrNZr4eeX8Vc1w-V7XgB2ysdnxAQg_KqCE3b6RHCtc'
-NAZWA_ZAKLADKI = 'Kato_OTO'
+NAZWA_ZAKLADKI = 'otodom_kato_rent'
 URL_OTODOM = 'https://www.otodom.pl/pl/wyniki/wynajem/mieszkanie/slaskie/katowice/katowice/katowice?ownerTypeSingleSelect=ALL'
 BASE_URL = 'https://www.otodom.pl'
 
