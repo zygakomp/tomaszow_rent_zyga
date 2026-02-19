@@ -131,28 +131,25 @@ def parse_rent_and_fees(card_text):
 
 def extract_prices_from_card_dom(card):
     """
-    POPRAWIONE POD TWÓJ HTML:
-    - koszt najmu: <span data-sentry-element="MainPrice">1550&nbsp;zł</span>
+    Zwraca: (koszt_najmu, cena_za_m2, czynsz)
+    - koszt najmu: <span data-sentry-element="MainPrice">396 zł</span>
+    - cena za m2:  <span>22 zł/m²</span> (szukamy po treści 'zł/m²' albo 'zł/m2')
     - czynsz:      "+ czynsz: 600 zł/miesiąc" (wyciągamy TYLKO kwotę po słowie czynsz)
-    Zwraca: (koszt_najmu, czynsz)
     """
-    koszt_najmu = 0
-    czynsz = 0
+    koszt_najmu = 0.0
+    cena_za_m2 = 0.0
+    czynsz = 0.0
 
     # --- 1) KOSZT NAJMU (MainPrice) z DOM ---
-    # próbujemy po stabilnych atrybutach, nie po klasach css-xxxx
     main_price_selectors = [
         'span[data-sentry-element="MainPrice"]',
         '[data-sentry-element="MainPrice"]',
-        'span[data-sentry-element="MainPrice"][class]',
-        # czasem komponent jest w środku, ale data-sentry-element zostaje
     ]
 
     for sel in main_price_selectors:
         try:
             els = card.find_elements(By.CSS_SELECTOR, sel)
             for el in els:
-                # text bywa pusty; textContent zwykle działa
                 t = (el.text or "").strip()
                 if not t:
                     try:
@@ -166,7 +163,31 @@ def extract_prices_from_card_dom(card):
         except:
             pass
 
-    # --- 2) innerHTML fallback (gdy Selenium .text nie łapie) ---
+    # --- 2) Cena za m2 z DOM (nie po klasie, tylko po treści) ---
+    # bierzemy wszystkie spany i szukamy takiego, który zawiera "zł/m²" lub "zł/m2"
+    try:
+        spans = card.find_elements(By.TAG_NAME, "span")
+        for sp in spans:
+            t = (sp.text or "").strip()
+            if not t:
+                try:
+                    t = (sp.get_attribute("textContent") or "").strip()
+                except:
+                    t = ""
+            if not t:
+                continue
+
+            t_norm = t.replace('\xa0', ' ').strip().lower()
+            # typowe: "22 zł/m²"
+            if ("zł/m²" in t_norm) or ("zł/m2" in t_norm):
+                val = _to_amount(t_norm)
+                if val > 0:
+                    cena_za_m2 = val
+                    break
+    except:
+        pass
+
+    # --- 3) innerHTML fallback ---
     inner_html = ""
     try:
         inner_html = card.get_attribute("innerHTML") or ""
@@ -174,11 +195,9 @@ def extract_prices_from_card_dom(card):
         inner_html = ""
 
     if inner_html:
-        # normalizacja &nbsp; żeby regex złapał liczbę
         ih = inner_html.replace("&nbsp;", " ").replace("\xa0", " ")
 
         if koszt_najmu == 0:
-            # <span data-sentry-element="MainPrice" ...>1550 zł</span>
             m = re.search(
                 r'data-sentry-element="MainPrice"[^>]*>\s*([\d\s,\.]+)\s*zł',
                 ih,
@@ -187,12 +206,18 @@ def extract_prices_from_card_dom(card):
             if m:
                 koszt_najmu = _to_amount(m.group(1))
 
-        # --- 3) CZYNSZ: tylko kwota po słowie czynsz (nie łapie 1550) ---
+        if cena_za_m2 == 0:
+            # łapie "22 zł/m²" albo "22 zł/m2"
+            m2 = re.search(r'([\d\s,\.]+)\s*zł\s*/\s*(?:m²|m2)', ih, flags=re.IGNORECASE)
+            if m2:
+                cena_za_m2 = _to_amount(m2.group(1))
+
+        # czynsz: tylko kwota po słowie czynsz
         m_fee = re.search(r'czynsz[^0-9]*([\d\s,\.]+)\s*zł', ih, flags=re.IGNORECASE)
         if m_fee:
             czynsz = _to_amount(m_fee.group(1))
 
-    # --- 4) Asekuracja dla czynszu z innerText, gdyby HTML był okrojony ---
+    # --- 4) Asekuracja: czynsz z innerText ---
     if czynsz == 0:
         try:
             inner_text = (card.get_attribute("innerText") or "").replace('\xa0', ' ')
@@ -202,7 +227,17 @@ def extract_prices_from_card_dom(card):
         except:
             pass
 
-    return koszt_najmu, czynsz
+    # --- 5) Asekuracja: cena/m2 z innerText ---
+    if cena_za_m2 == 0:
+        try:
+            inner_text = (card.get_attribute("innerText") or "").replace('\xa0', ' ')
+            m2t = re.search(r'([\d\s,\.]+)\s*zł\s*/\s*(?:m²|m2)', inner_text, flags=re.IGNORECASE)
+            if m2t:
+                cena_za_m2 = _to_amount(m2t.group(1))
+        except:
+            pass
+
+    return koszt_najmu, cena_za_m2, czynsz
 
 def process_page(driver):
     rows_to_append = []
@@ -251,13 +286,17 @@ def process_page(driver):
                         adres = line
                         break
 
-            # --- CENY: KOSZT NAJMU (E) + CZYNSZ (F) ---
-            cena_najmu_dom, czynsz_dom = extract_prices_from_card_dom(card)
+            # --- CENY: E = cena_najmu, F = cena_za_m2 ---
+            cena_najmu_dom, cena_m2_dom, czynsz_dom = extract_prices_from_card_dom(card)
             cena_najmu_txt, czynsz_txt = parse_rent_and_fees(card_text)
 
-            # preferuj DOM; jeśli DOM nie dał ceny, weź fallback z tekstu
+            # preferuj DOM; fallback do tekstu
             cena_najmu = cena_najmu_dom if cena_najmu_dom > 0 else cena_najmu_txt
             czynsz = czynsz_dom if czynsz_dom > 0 else czynsz_txt
+
+            # cena za m2: jak DOM nie dał, policz z cena_najmu/metraz (tylko gdy metraż > 0)
+            # (ale najpierw spróbujemy wprost z DOM)
+            cena_za_m2 = cena_m2_dom
 
             # --- PARAMETRY (Pokoje, m2, Piętro) ---
             pokoje, metraz, pietro = "0", "0", "0"
@@ -270,6 +309,15 @@ def process_page(driver):
                 if 'piętr' in l_low:
                     pietro = extract_numbers(line)
 
+            # jeśli dalej brak cena/m2, a mamy metraż i cenę najmu -> wylicz
+            if (cena_za_m2 == 0 or cena_za_m2 is None) and metraz:
+                try:
+                    mval = float(str(metraz).replace(',', '.'))
+                    if mval > 0 and cena_najmu > 0:
+                        cena_za_m2 = round(cena_najmu / mval, 2)
+                except:
+                    pass
+
             # --- OFERENT ---
             typ = "Oferta prywatna"
             wystawca = "Osoba prywatna"
@@ -277,12 +325,14 @@ def process_page(driver):
                 typ = "Biuro nieruchomości"
                 wystawca = lines[-1] if len(lines) > 0 else "Biuro"
 
-            # E = cena_najmu, F = czynsz (TAKO MA BYĆ)
+            # E = cena_najmu, F = cena_za_m2 (TAKO MA BYĆ)
+            # DODATKOWO: czynsz dopisany na końcu jako extra kolumna (żeby nie zgubić danych)
             rows_to_append.append([
                 data_now, link, tytul, adres,
-                cena_najmu, czynsz,
+                cena_najmu, cena_za_m2,
                 pokoje, metraz, pietro, typ, wystawca,
-                "Brak Danych (Poza Kartą)", "Brak opisu (Poza Kartą)"
+                "Brak Danych (Poza Kartą)", "Brak opisu (Poza Kartą)",
+                czynsz  # <- jeśli nie chcesz tej kolumny, usuń tę wartość
             ])
         except:
             continue
@@ -322,4 +372,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
