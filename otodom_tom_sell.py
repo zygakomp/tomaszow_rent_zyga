@@ -69,15 +69,16 @@ def authorize_google_sheets():
 
         print(f"Pomyślnie połączono z arkuszem: {arkusz.title}, zakładka: {zakladka.title}")
 
+        # ZMIENIONO: Nagłówek w kolumnie F
         naglowki = [
             'Data Scrapingu',
             'URL Ogłoszenia',
             'Tytuł Ogłoszenia',
             'Adres',
-            'Cena (sprzedaż)',      # E
-            'Cena za m2',           # F  <-- ZMIANA: było "Czynsz (dodatkowo)"
+            'Cena (sprzedaż)',
+            'Cena za m2',
             'Liczba pokoi',
-            'Powierzchnia',         # H
+            'Powierzchnia',
             'Piętro',
             'Typ Oferenta',
             'Wystawca (Nazwa)',
@@ -168,7 +169,6 @@ def process_page(driver):
         link, tytul, adres = "Brak linku", "Brak tytułu", "Brak adresu"
 
         cena_text = "Brak Danych"
-        czynsz_text = "Brak Danych"  # dalej pobieramy, ale nie zapisujemy już do kolumny F
         liczba_pokoi_text = "Brak Danych"
         powierzchnia_text = "Brak Danych"
         pietro_text = "Brak Danych"
@@ -208,14 +208,6 @@ def process_page(driver):
         except NoSuchElementException:
             pass
 
-        # czynsz tylko jeśli w tekście jest "czynsz" (zostaje, ale kolumna F będzie liczone)
-        try:
-            fee_el = card.find_element(By.XPATH, ".//span[contains(@class, 'eanmlll2')]")
-            tmp = (fee_el.text or "").strip()
-            czynsz_text = tmp if "czynsz" in tmp.lower() else "Brak Danych"
-        except NoSuchElementException:
-            czynsz_text = "Brak Danych"
-
         # parametry
         try:
             specs = card.find_elements(By.XPATH, ".//dl/dt | .//dl/dd/span")
@@ -226,7 +218,7 @@ def process_page(driver):
 
                     if 'Liczba pokoi' in key:
                         liczba_pokoi_text = value
-                    elif 'Powierzchnia' in key:
+                    elif 'Cena za metr kwadratowy' in key or 'Powierzchnia' in key:
                         powierzchnia_text = value
                     elif 'Piętro' in key:
                         pietro_text = value
@@ -254,30 +246,27 @@ def process_page(driver):
 
         # konwersje
         cena = clean_and_convert_to_number(extract_numbers(cena_text))
-        czynsz = clean_and_convert_to_number(extract_numbers(czynsz_text))
         liczba_pokoi = clean_and_convert_to_number(extract_numbers(liczba_pokoi_text))
         powierzchnia = clean_and_convert_to_number(extract_numbers(powierzchnia_text))
         pietro = clean_and_convert_to_number(extract_numbers(pietro_text))
 
-        # --- ZMIANA: kolumna F = cena za m2 = E / H ---
-        cena_za_m2 = "Brak Danych"
-        if isinstance(cena, (int, float)) and isinstance(powierzchnia, (int, float)) and powierzchnia not in (0, 0.0):
-            try:
-                cena_za_m2 = round(cena / powierzchnia, 2)
-            except Exception:
-                cena_za_m2 = "Brak Danych"
+        # --- OBLICZANIE CENY ZA M2 (KOLUMNA F: E/H) ---
+        if isinstance(cena, (int, float)) and isinstance(powierzchnia, (int, float)) and powierzchnia > 0:
+            cena_za_m2 = round(cena / powierzchnia, 2)
+        else:
+            cena_za_m2 = "Brak Danych"
 
-        print(f"[{i + 1}/{len(listing_cards)}] Tytuł: {tytul} | Cena: {cena} | m2: {powierzchnia} | Cena/m2: {cena_za_m2} | Czynsz: {czynsz}")
+        print(f"[{i + 1}/{len(listing_cards)}] Tytuł: {tytul} | Cena: {cena} | Cena m2: {cena_za_m2}")
 
         rows_to_append.append([
             data_scrapingu,
             link,
             tytul,
             adres,
-            cena,          # E
-            cena_za_m2,    # F  <-- ZMIANA: zamiast czynsz
-            liczba_pokoi,
-            powierzchnia,  # H
+            cena,           # Kolumna E
+            cena_za_m2,     # Kolumna F (Wyliczone E/H)
+            liczba_pokoi,   # Kolumna G
+            powierzchnia,   # Kolumna H
             pietro,
             typ_oferenta,
             wystawca_nazwa,
