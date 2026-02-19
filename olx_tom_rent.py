@@ -16,7 +16,7 @@ import re
 
 # --- KONFIGURACJA ---
 ARKUSZ_ID = '1JdrNZr4eeX8Vc1w-V7XgB2ysdnxAQg_KqCE3b6RHCtc'
-NAZWA_ZAKLADKI = 'TOM_OLX'
+NAZWA_ZAKLADKI = 'olx_tom_rent'
 
 # URL scrapowania (bez parametru page=)
 # (masz tu dist=0 żeby wyłączyć pobliskie ogłoszenia)
