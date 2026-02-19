@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 # --- KONFIGURACJA ---
 ARKUSZ_ID = '1JdrNZr4eeX8Vc1w-V7XgB2ysdnxAQg_KqCE3b6RHCtc'
-NAZWA_ZAKLADKI = 'Kato_OLX'
+NAZWA_ZAKLADKI = 'olx_kato_rent'
 URL_OLX = 'https://www.olx.pl/nieruchomosci/mieszkania/wynajem/katowice/'
 
 BASE_URL = "https://www.olx.pl"
