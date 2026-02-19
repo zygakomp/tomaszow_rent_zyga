@@ -68,3 +68,17 @@ jobs:
         env:
           G_SHEETS_JSON: ${{ secrets.G_SHEETS_JSON }}
         run: python ./olx_pabia_rent.py
+
+        # SKRYPT 7: DODATKOWY (np. statystyki lub inny plik)
+      - name: Uruchom - OLX Katowice Rent
+        continue-on-error: true
+        env:
+          G_SHEETS_JSON: ${{ secrets.G_SHEETS_JSON }}
+        run: python ./olx_kato_rent.py
+
+        # SKRYPT 8: DODATKOWY (np. statystyki lub inny plik)
+      - name: Uruchom - OLX Tomaszow Sell
+        continue-on-error: true
+        env:
+          G_SHEETS_JSON: ${{ secrets.G_SHEETS_JSON }}
+        run: python ./olx_tom_sell.py
