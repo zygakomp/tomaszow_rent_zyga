@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 
 # --- KONFIGURACJA ---
 ARKUSZ_ID = '1JdrNZr4eeX8Vc1w-V7XgB2ysdnxAQg_KqCE3b6RHCtc'
-NAZWA_ZAKLADKI = 'Pabianice_Najem_OLX'
+NAZWA_ZAKLADKI = 'olx_pabia_rent'
 URL_OLX = 'https://www.olx.pl/nieruchomosci/biura-lokale/pabianice/'
 
 BASE_URL = "https://www.olx.pl"
