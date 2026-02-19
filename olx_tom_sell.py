@@ -21,16 +21,22 @@ URL_OLX = 'https://www.olx.pl/nieruchomosci/mieszkania/sprzedaz/tomaszow-mazowie
 BASE_URL = "https://www.olx.pl"
 WARSAW_TZ = ZoneInfo("Europe/Warsaw")
 
+# limit stron (domyślnie 5) — ustaw w workflow env MAX_PAGES
 MAX_PAGES = int(os.environ.get("MAX_PAGES", "5"))
+
 
 def now_pl_str():
     return datetime.now(WARSAW_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
+
+# --- UNIWERSALNA FUNKCJA DO CZYSZCZENIA I KONWERSJI NA LICZBY ---
 def clean_and_convert_to_number(text_value, is_float=False):
     if not isinstance(text_value, str) or text_value.strip() == "Brak Danych":
         return text_value
+
     cleaned_value = text_value.strip().replace('\xa0', ' ')
     cleaned_value = cleaned_value.replace('zł', '').replace('.', '').replace(',', '.').replace(' ', '').strip()
+
     cleaned_value = (
         cleaned_value
         .replace('m²', '').replace('m2', '')
@@ -38,28 +44,45 @@ def clean_and_convert_to_number(text_value, is_float=False):
         .replace('piętro', '')
         .strip()
     )
-    if cleaned_value.lower() == 'parter': return 0
-    if cleaned_value.lower() in ['powyżej10', 'powyzej10']: return 11
-    try:
-        if is_float: return float(cleaned_value)
-        else: return int(float(cleaned_value))
-    except ValueError: return text_value
 
+    if cleaned_value.lower() == 'parter':
+        return 0
+    if cleaned_value.lower() in ['powyżej10', 'powyzej10']:
+        return 11
+
+    try:
+        if is_float:
+            return float(cleaned_value)
+        else:
+            return int(float(cleaned_value))
+    except ValueError:
+        return text_value
+
+
+# --- GOOGLE SHEETS (GITHUB: ENV G_SHEETS_JSON) ---
 def authorize_google_sheets():
+    print("Autoryzacja do Google Sheets (ENV: G_SHEETS_JSON)...")
     try:
         creds_json = os.environ.get("G_SHEETS_JSON")
-        if not creds_json: raise Exception("Brak zmiennej G_SHEETS_JSON")
+        if not creds_json:
+            raise Exception("Brak zmiennej środowiskowej G_SHEETS_JSON (dodaj secret w GitHub).")
+
         creds_dict = json.loads(creds_json)
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
+
         arkusz = client.open_by_key(ARKUSZ_ID)
+
         try:
             zakladka = arkusz.worksheet(NAZWA_ZAKLADKI)
         except gspread.WorksheetNotFound:
+            print(f"Tworzę nową zakładkę: {NAZWA_ZAKLADKI}")
             zakladka = arkusz.add_worksheet(title=NAZWA_ZAKLADKI, rows="300", cols="25")
 
-        # --- POPRAWIONE NAGŁÓWKI (I: Pokoje, J: Poziom) ---
+        print(f"Pomyślnie połączono z arkuszem: {arkusz.title}, zakładka: {zakladka.title}")
+
+        # ZMIENIONO: Nagłówki według nowej struktury (G=Cena/m2, I=Pokoje, J=Poziom)
         naglowki = [
             'Data Scrapingu',    # A
             'URL Ogłoszenia',    # B
@@ -67,10 +90,10 @@ def authorize_google_sheets():
             'Wystawca (Nazwa)',  # D
             'Telefon Kontaktowy',# E
             'Koszt (F)',         # F
-            'Cena za m2 (G)',    # G
+            'Cena za m2 (G)',    # G (Wyliczone F/H)
             'Powierzchnia (H)',  # H
-            'Liczba pokoi (I)',  # I - TUTAJ POPRAWKA
-            'Poziom (J)',        # J - TUTAJ POPRAWKA
+            'Liczba pokoi (I)',  # I
+            'Poziom (J)',        # J
             'Czynsz (dodatkowo)',# K
             'Parking',
             'Zwierzęta',
@@ -79,14 +102,21 @@ def authorize_google_sheets():
             'Rodzaj zabudowy',
             'Opis'
         ]
-        if not zakladka.row_values(1):
-            zakladka.append_row(naglowki)
+
+        if zakladka.row_values(1) != naglowki:
+            if not zakladka.row_values(1):
+                zakladka.append_row(naglowki)
+
         return zakladka
+
     except Exception as e:
-        print(f"Błąd arkusza: {e}")
+        print(f"BŁĄD autoryzacji Google Sheets: {e}")
         return None
 
+
+# --- SELENIUM (GITHUB ACTIONS) ---
 def setup_selenium_driver():
+    print("Uruchamianie Chrome (headless, GitHub Actions)...")
     try:
         service = ChromeService(ChromeDriverManager().install())
         options = webdriver.ChromeOptions()
@@ -95,14 +125,48 @@ def setup_selenium_driver():
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--window-size=1920,1080')
         options.add_argument('--disable-blink-features=AutomationControlled')
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option('useAutomationExtension', False)
+        options.add_argument('--incognito')
+        options.add_argument(
+            'user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
+        )
+
         driver = webdriver.Chrome(service=service, options=options)
+        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         return driver
     except Exception as e:
-        print(f"Błąd Chrome: {e}"); return None
+        print(f"BŁĄD uruchomienia Chrome: {e}")
+        return None
+
+
+def handle_cookies(driver):
+    try:
+        btn = WebDriverWait(driver, 3).until(EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler")))
+        btn.click()
+        time.sleep(1)
+    except:
+        pass
+
+
+def get_max_page_number(driver):
+    try:
+        pagination_links = driver.find_elements(By.XPATH, "//li[@data-testid='pagination-list-item']/a")
+        max_page = 1
+        for link in pagination_links:
+            try:
+                page_num = int(link.text.strip())
+                if page_num > max_page: max_page = page_num
+            except: continue
+        return max_page
+    except:
+        return 1
+
 
 def get_listing_details(driver, url):
     driver.get(url)
     time.sleep(3)
+
     data_scrapingu = now_pl_str()
     cena_najmu = "Brak Danych"
     opis_ogloszenia = "Brak opisu"
@@ -120,48 +184,70 @@ def get_listing_details(driver, url):
     rodzaj_zabudowy = "Brak Danych"
 
     wait = WebDriverWait(driver, 10)
+
+    # 1) KOSZT
     try:
-        cena_najmu = wait.until(EC.presence_of_element_located((By.XPATH, "//div[@data-testid='ad-price-container']/h3"))).text.strip()
-    except: pass
-    try:
-        wystawca_nazwa = driver.find_element(By.XPATH, "//h4[@data-testid='user-profile-user-name']").text.strip()
-    except: pass
-    try:
-        btn = wait.until(EC.presence_of_element_located((By.XPATH, "//button[@data-testid='show-phone']")))
-        btn.click(); time.sleep(1.5)
-        telefon_kontaktowy = driver.find_element(By.XPATH, "//div[@data-testid='ad-contact-bar']//p[contains(@class,'css-')]").text.strip()
+        cena_element = wait.until(EC.presence_of_element_located((By.XPATH, "//div[@data-testid='ad-price-container']/h3")))
+        cena_najmu = cena_element.text.strip()
     except: pass
 
+    # 2) WYSTAWCA
+    try:
+        wystawca_element = driver.find_element(By.XPATH, "//h4[@data-testid='user-profile-user-name']")
+        wystawca_nazwa = wystawca_element.text.strip()
+    except: pass
+
+    # 3) TELEFON
+    try:
+        show_phone_button = wait.until(EC.presence_of_element_located((By.XPATH, "//button[@data-testid='show-phone']")))
+        show_phone_button.click()
+        time.sleep(1.5)
+        numer_element = driver.find_element(By.XPATH, "//div[@data-testid='ad-contact-bar']//p[contains(@class,'css-')]")
+        telefon_kontaktowy = numer_element.text.strip()
+    except: pass
+
+    # 4) PARAMETRY
     try:
         param_container = driver.find_element(By.XPATH, "//div[@data-testid='ad-parameters-container']")
         try: typ_oferenta = param_container.find_element(By.TAG_NAME, "span").text.strip()
         except: pass
-        params = param_container.find_elements(By.TAG_NAME, "p")
-        for p in params:
-            t = p.text.strip()
-            if t.startswith("Czynsz (dodatkowo):"): czynsz_oplaty = t.replace("Czynsz (dodatkowo):", "").strip()
-            elif t.startswith("Powierzchnia:"): powierzchnia = t.replace("Powierzchnia:", "").strip()
-            elif t.startswith("Liczba pokoi:"): liczba_pokoi = t.replace("Liczba pokoi:", "").strip()
-            elif t.startswith("Parking:"): parking = t.replace("Parking:", "").strip()
-            elif t.startswith("Zwierzęta:"): zwierzeta = t.replace("Zwierzęta:", "").strip()
-            elif t.startswith("Winda:"): winda = t.replace("Winda:", "").strip()
-            elif t.startswith("Poziom:"): poziom = t.replace("Poziom:", "").strip()
-            elif t.startswith("Umeblowane:"): umeblowane = t.replace("Umeblowane:", "").strip()
-            elif t.startswith("Rodzaj zabudowy:"): rodzaj_zabudowy = t.replace("Rodzaj zabudowy:", "").strip()
+
+        param_elements = param_container.find_elements(By.TAG_NAME, "p")
+        for p in param_elements:
+            text = p.text.strip()
+            if text.startswith("Czynsz (dodatkowo):"): czynsz_oplaty = text.replace("Czynsz (dodatkowo):", "").strip()
+            elif text.startswith("Powierzchnia:"): powierzchnia = text.replace("Powierzchnia:", "").strip()
+            elif text.startswith("Liczba pokoi:"): liczba_pokoi = text.replace("Liczba pokoi:", "").strip()
+            elif text.startswith("Parking:"): parking = text.replace("Parking:", "").strip()
+            elif text.startswith("Zwierzęta:"): zwierzeta = text.replace("Zwierzęta:", "").strip()
+            elif text.startswith("Winda:"): winda = text.replace("Winda:", "").strip()
+            elif text.startswith("Poziom:"): poziom = text.replace("Poziom:", "").strip()
+            elif text.startswith("Umeblowane:"): umeblowane = text.replace("Umeblowane:", "").strip()
+            elif text.startswith("Rodzaj zabudowy:"): rodzaj_zabudowy = text.replace("Rodzaj zabudowy:", "").strip()
     except: pass
 
+    # 5) OPIS
     try:
-        opis_ogloszenia = driver.find_element(By.XPATH, "//div[@data-cy='ad_description']//div[contains(@class, 'css-')]").text.strip().replace('\n', ' ')
+        opis_element = driver.find_element(By.XPATH, "//div[@data-cy='ad_description']//div[contains(@class, 'css-')]")
+        opis_ogloszenia = opis_element.text.strip().replace('\n', ' ')
     except: pass
 
+    # Konwersje
     koszt_kwota = clean_and_convert_to_number(cena_najmu, is_float=False)
     powierzchnia_liczba = clean_and_convert_to_number(powierzchnia, is_float=True)
-    
-    # Cena za m2 (G)
+    liczba_pokoi_liczba = clean_and_convert_to_number(liczba_pokoi, is_float=False)
+    poziom_liczba = clean_and_convert_to_number(poziom, is_float=False)
+    czynsz_oplaty_kwota = clean_and_convert_to_number(czynsz_oplaty, is_float=False)
+
+    # OBLICZENIE CENY ZA M2 (Kolumna G = F/H)
     if isinstance(koszt_kwota, (int, float)) and isinstance(powierzchnia_liczba, (int, float)) and powierzchnia_liczba > 0:
         cena_za_m2 = round(koszt_kwota / powierzchnia_liczba, 2)
-    else: cena_za_m2 = "Brak Danych"
+    else:
+        cena_za_m2 = "Brak Danych"
 
+    print(f"  -> Wynik: Koszt: {koszt_kwota}, Cena/m2: {cena_za_m2}, Pokoje: {liczba_pokoi_liczba}")
+
+    # ZMIENIONO: Kolejność elementów w liście, aby pasowała do kolumn A-Q
     return [
         data_scrapingu,      # A
         url,                 # B
@@ -169,11 +255,11 @@ def get_listing_details(driver, url):
         wystawca_nazwa,      # D
         telefon_kontaktowy,  # E
         koszt_kwota,         # F
-        cena_za_m2,          # G
+        cena_za_m2,          # G (WYLIczone F/H)
         powierzchnia_liczba, # H
-        clean_and_convert_to_number(liczba_pokoi), # I - POPRAWIONE
-        clean_and_convert_to_number(poziom),       # J - POPRAWIONE
-        clean_and_convert_to_number(czynsz_oplaty),# K
+        liczba_pokoi_liczba, # I (POPRAWIONE)
+        poziom_liczba,       # J (POPRAWIONE)
+        czynsz_oplaty_kwota, # K
         parking,
         zwierzeta,
         winda,
@@ -182,25 +268,51 @@ def get_listing_details(driver, url):
         opis_ogloszenia
     ]
 
+
 def main_scraper():
     zakladka = authorize_google_sheets()
+    if not zakladka: return
     driver = setup_selenium_driver()
-    if not zakladka or not driver: return
+    if not driver: return
+
     try:
-        driver.get(URL_OLX); time.sleep(5)
+        print(f"Otwieram: {URL_OLX}")
+        driver.get(URL_OLX)
+        time.sleep(6)
+        handle_cookies(driver)
+
+        detected_max = get_max_page_number(driver)
+        max_page = min(detected_max, MAX_PAGES)
+        
         all_links = set()
-        # Skanowanie stron (uproszczone dla czytelności)
-        listing_links = driver.find_elements(By.XPATH, "//div[@data-cy='l-card']//a[contains(@href, '/d/oferta/')]")
-        for elem in listing_links:
-            all_links.add(elem.get_attribute('href'))
-        
-        rows = []
-        for i, link in enumerate(list(all_links)[:20]): # Limit dla testu
-            print(f"Przetwarzam {i+1}: {link}")
-            rows.append(get_listing_details(driver, link))
-        
-        if rows: zakladka.append_rows(rows)
-    finally: driver.quit()
+        for page_num in range(1, max_page + 1):
+            page_url = URL_OLX if page_num == 1 else f"{URL_OLX}?page={page_num}"
+            driver.get(page_url)
+            time.sleep(4)
+            listing_links = driver.find_elements(By.XPATH, "//div[@data-cy='l-card']//a[contains(@href, '/d/oferta/')]")
+            for elem in listing_links:
+                href = elem.get_attribute('href')
+                if href: all_links.add(href)
+
+        links_list = list(all_links)
+        print(f"Ogłoszeń do przetworzenia: {len(links_list)}")
+
+        rows_to_append = []
+        for i, link in enumerate(links_list):
+            print(f"[{i + 1}/{len(links_list)}] Przetwarzam: {link}")
+            details = get_listing_details(driver, link)
+            rows_to_append.append(details)
+            time.sleep(1)
+
+        if rows_to_append:
+            zakladka.append_rows(rows_to_append)
+            print("Zapisano do Google Sheets.")
+
+    except Exception as e:
+        print(f"Błąd główny: {e}")
+    finally:
+        if driver: driver.quit()
+
 
 if __name__ == "__main__":
     main_scraper()
