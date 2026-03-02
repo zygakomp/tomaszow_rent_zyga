@@ -2,10 +2,10 @@ name: Multiskrypt Otodom - Sprzedaż, Wynajem i Statystyki
 
 on:
   schedule:
-    # Uruchamia się co 12 godzin (05:30 i 17:30 UTC)
-    # W Polsce (czas zimowy) to 06:30 i 18:30
-    - cron: '30 */12 * * *'
-  workflow_dispatch: # Przycisk do ręcznego odpalania
+    # Uruchamia się raz dziennie o 05:30 UTC
+    # W Polsce: 06:30 (czas zimowy) lub 07:30 (czas letni)
+    - cron: '30 5 * * *'
+  workflow_dispatch:
 
     
 
